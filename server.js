@@ -1,7 +1,6 @@
 // server.js
 
 import axios from 'axios';
-
 import express from 'express';
 import cors from 'cors';
 import bodyParser from 'body-parser';
@@ -13,12 +12,10 @@ import fs from 'fs';
 import ffmpeg from 'fluent-ffmpeg';
 import ffmpegInstaller from '@ffmpeg-installer/ffmpeg';
 import admin from 'firebase-admin';
+
 import { db } from './firebaseAdmin.js';
 import { sendTextMessage, sendAudioMessage, uploadMedia } from './whatsappService.js';
 import { processSequences, generateLetras, sendLetras } from './scheduler.js';
-
-
-
 
 dotenv.config();
 ffmpeg.setFfmpegPath(ffmpegInstaller.path);
@@ -68,19 +65,30 @@ app.post('/api/whatsapp/send-message', async (req, res) => {
 /**  
  * Endpoint para enviar nota de voz  
  */
-
-
 app.post('/api/whatsapp/send-audio', upload.single('audio'), async (req, res) => {
   const { phone } = req.body;
-  const uploadPath = req.file.path;
-  const mimeType   = req.file.mimetype;
+  // Multer deja el archivo sin extensión, vamos a renombrarlo según su mimetype
+  const originalPath = req.file.path;
+  // Escoge la extensión y MIME que reconoce WhatsApp
+  const isOgg = req.file.mimetype === 'audio/ogg' || req.file.mimetype === 'audio/opus';
+  const ext      = isOgg ? '.ogg' : '.m4a';
+  const mime     = isOgg ? 'audio/ogg' : 'audio/mp4';
+  const uploadPath = originalPath + ext;
+
+  // Renombramos el archivo (123abc → 123abc.m4a o .ogg)
+  fs.renameSync(originalPath, uploadPath);
+
   try {
-    const mediaId = await uploadMedia(uploadPath, mimeType);
+    // 1) Sube el medio y obtiene mediaId
+    const mediaId = await uploadMedia(uploadPath, mime);
+    // 2) Envía la nota de voz usando ese mediaId
     await sendAudioMessage(phone, mediaId);
+    // 3) Limpia el archivo temporal
     fs.unlinkSync(uploadPath);
     return res.json({ success: true });
   } catch (err) {
     console.error('Error enviando audio:', err);
+    // Limpieza en caso de error
     try { fs.unlinkSync(uploadPath); } catch {}
     return res.status(500).json({ error: err.message });
   }
@@ -91,8 +99,8 @@ app.post('/api/whatsapp/send-audio', upload.single('audio'), async (req, res) =>
  */
 app.get('/webhook', (req, res) => {
   console.log('[DEBUG] GET /webhook verify');
-  const mode = req.query['hub.mode'];
-  const token = req.query['hub.verify_token'];
+  const mode      = req.query['hub.mode'];
+  const token     = req.query['hub.verify_token'];
   const challenge = req.query['hub.challenge'];
   if (mode === 'subscribe' && token === process.env.WHATSAPP_VERIFY_TOKEN) {
     return res.send(challenge);
@@ -106,21 +114,15 @@ app.get('/webhook', (req, res) => {
 app.get('/api/whatsapp/status', async (req, res) => {
   console.log('[DEBUG] GET /api/whatsapp/status');
   try {
-    // Hacemos un request simple para validar token y número
     const resp = await axios.get(GRAPH_PHONE_URL, {
-      params: {
-        access_token: TOKEN,
-        fields: 'display_phone_number'
-      }
+      params: { access_token: TOKEN, fields: 'display_phone_number' }
     });
-    // Si llegamos aquí, todo está OK
     return res.json({
       status: 'Conectado',
       phone: resp.data.display_phone_number
     });
   } catch (err) {
     console.error('[ERROR] status check failed:', err.response?.data || err.message);
-    // 401, 400, 404, etc.
     const code = err.response?.status || 500;
     return res.status(code).json({
       status: 'Desconectado',
@@ -128,7 +130,6 @@ app.get('/api/whatsapp/status', async (req, res) => {
     });
   }
 });
-
 
 /**
  * Número activo
@@ -149,25 +150,22 @@ app.get('/api/whatsapp/number', async (req, res) => {
 /**  
  * Webhook de WhatsApp: Mensajes entrantes  
  */
-
 app.post('/webhook', async (req, res) => {
   console.log('[DEBUG] POST /webhook payload:', JSON.stringify(req.body).slice(0,200));
   try {
-  
     const entryChanges = req.body.entry?.flatMap(e => e.changes) || [];
     for (const change of entryChanges) {
       const messages = change.value?.messages || [];
       for (const msg of messages) {
-        const from = msg.from;                             // e.g. "521234567890"
-        const text = msg.text?.body || '';
-        // Detectar media (url si ya has implementado la descarga previa)
+        const from      = msg.from;
+        const text      = msg.text?.body || '';
         const mediaType = msg.image ? 'image'
                          : msg.audio ? 'audio'
-                         : text         ? 'text'
+                         : text      ? 'text'
                          : null;
         const mediaUrl  = msg.image?.url || msg.audio?.url || null;
 
-        // 1) Upsert de lead
+        // Upsert de lead
         const q = await db.collection('leads')
                           .where('telefono','==', from)
                           .limit(1)
@@ -181,11 +179,11 @@ app.post('/webhook', async (req, res) => {
 
           const newLead = await db.collection('leads').add({
             telefono: from,
-            nombre:  msg.pushName || '',
-            source:  'WhatsApp',
+            nombre:   msg.pushName || '',
+            source:   'WhatsApp',
             fecha_creacion: now,
-            estado:  'nuevo',
-            etiquetas: [trigger],
+            estado:   'nuevo',
+            etiquetas:[trigger],
             secuenciasActivas: [{ trigger, startTime: now.toISOString(), index: 0 }],
             unreadCount: 1,
             lastMessageAt: now
@@ -199,22 +197,19 @@ app.post('/webhook', async (req, res) => {
           });
         }
 
-        // 2) Guardar mensaje en subcolección
-        const msgData = {
-          content:   text,
-          mediaType,
-          mediaUrl,
-          sender:    'lead',
-          timestamp: new Date()
-        };
+        // Guardar mensaje
         await db.collection('leads')
                 .doc(leadId)
                 .collection('messages')
-                .add(msgData);
+                .add({
+                  content:   text,
+                  mediaType,
+                  mediaUrl,
+                  sender:    'lead',
+                  timestamp: new Date()
+                });
       }
     }
-
-    // Siempre responder 200 lo antes posible
     return res.sendStatus(200);
   } catch (err) {
     console.error('[ERROR] en webhook:', err);
@@ -222,7 +217,7 @@ app.post('/webhook', async (req, res) => {
   }
 });
 
-// Scheduler: tus procesos periódicos
+// Scheduler: procesos periódicos
 cron.schedule('* * * * *', () => {
   processSequences().catch(err => console.error('Error en processSequences:', err));
 });

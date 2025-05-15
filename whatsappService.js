@@ -6,6 +6,7 @@ import admin from 'firebase-admin';
 import { db } from './firebaseAdmin.js';
 import FormData from 'form-data';
 import fs from 'fs';
+import path from 'path';  
 
 dotenv.config();
 
@@ -77,9 +78,20 @@ async function callWhatsAppAPI(path, body, config = {}) {
 
   async function uploadMedia(filePath, mimeType) {
     const form = new FormData();
-    form.append('file', fs.createReadStream(filePath));
+    // 1) indica que es para WhatsApp
+    form.append('messaging_product', 'whatsapp');
+    // 2) añade el archivo, pasándole el mimeType explícito
+    form.append(
+      'file',
+      fs.createReadStream(filePath),
+      {
+        filename: path.basename(filePath),
+        contentType: mimeType
+      }
+    );
+    // 3) y el campo 'type' requerido
     form.append('type', mimeType);
-    form.append('messaging_product', 'whatsapp');   // <— aquí
+  
     const data = await callWhatsAppAPI('/media', form, {
       headers: form.getHeaders()
     });
