@@ -11,7 +11,7 @@ import ffmpeg from 'fluent-ffmpeg';
 import ffmpegInstaller from '@ffmpeg-installer/ffmpeg';
 import admin from 'firebase-admin';
 import { db } from './firebaseAdmin.js';
-import { sendTextMessage, sendAudioMessage } from './whatsappApiService.js';
+import { sendTextMessage, sendAudioMessage } from './whatsappService.js';
 import { processSequences, generateLetras, sendLetras } from './scheduler.js';
 
 dotenv.config();
