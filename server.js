@@ -32,6 +32,7 @@ const upload = multer({ dest: path.resolve('./uploads') });
 const FieldValue = admin.firestore.FieldValue;
 
 // Middlewares
+app.use(express.json({ verify: (req, res, buf) => { req.rawBody = buf } }));
 app.use(cors());
 app.use(bodyParser.json());
 
@@ -166,62 +167,75 @@ app.get('/api/whatsapp/number', async (req, res) => {
 /**  
  * Webhook de WhatsApp: Mensajes entrantes  
  */
+
 app.post('/webhook', async (req, res) => {
-  console.log('[DEBUG] POST /webhook', JSON.stringify(req.body).slice(0,200));
+  console.log('[DEBUG] POST /webhook payload:', JSON.stringify(req.body).slice(0,200));
   try {
-    const entry = req.body.entry?.[0];
-    const changes = entry?.changes?.[0];
-    const msg = changes?.value?.messages?.[0];
-    if (msg) {
-      const from = msg.from;
-      const text = msg.text?.body || '';
+  
+    const entryChanges = req.body.entry?.flatMap(e => e.changes) || [];
+    for (const change of entryChanges) {
+      const messages = change.value?.messages || [];
+      for (const msg of messages) {
+        const from = msg.from;                             // e.g. "521234567890"
+        const text = msg.text?.body || '';
+        // Detectar media (url si ya has implementado la descarga previa)
+        const mediaType = msg.image ? 'image'
+                         : msg.audio ? 'audio'
+                         : text         ? 'text'
+                         : null;
+        const mediaUrl  = msg.image?.url || msg.audio?.url || null;
 
-      // 1) Upsert de lead
-      const q = await db.collection('leads')
-                        .where('telefono','==', from)
-                        .limit(1)
-                        .get();
-      let leadId;
-      if (q.empty) {
-        const now = new Date();
-        const cfgSnap = await db.collection('config').doc('appConfig').get();
-        const cfg = cfgSnap.exists ? cfgSnap.data() : {};
-        const trigger = cfg.defaultTrigger || 'NuevoLead';
+        // 1) Upsert de lead
+        const q = await db.collection('leads')
+                          .where('telefono','==', from)
+                          .limit(1)
+                          .get();
+        let leadId;
+        if (q.empty) {
+          const now     = new Date();
+          const cfgSnap = await db.collection('config').doc('appConfig').get();
+          const cfg     = cfgSnap.exists ? cfgSnap.data() : {};
+          const trigger = cfg.defaultTrigger || 'NuevoLead';
 
-        const newLead = await db.collection('leads').add({
-          telefono: from,
-          nombre: msg.pushName || '',
-          source: 'WhatsApp',
-          fecha_creacion: now,
-          estado: 'nuevo',
-          etiquetas: [trigger],
-          secuenciasActivas: [{ trigger, startTime: now.toISOString(), index: 0 }],
-          unreadCount: 1,
-          lastMessageAt: now
-        });
-        leadId = newLead.id;
-      } else {
-        leadId = q.docs[0].id;
-        await db.collection('leads').doc(leadId).update({
-          unreadCount: FieldValue.increment(1),
-          lastMessageAt: new Date()
-        });
+          const newLead = await db.collection('leads').add({
+            telefono: from,
+            nombre:  msg.pushName || '',
+            source:  'WhatsApp',
+            fecha_creacion: now,
+            estado:  'nuevo',
+            etiquetas: [trigger],
+            secuenciasActivas: [{ trigger, startTime: now.toISOString(), index: 0 }],
+            unreadCount: 1,
+            lastMessageAt: now
+          });
+          leadId = newLead.id;
+        } else {
+          leadId = q.docs[0].id;
+          await db.collection('leads').doc(leadId).update({
+            unreadCount: FieldValue.increment(1),
+            lastMessageAt: new Date()
+          });
+        }
+
+        // 2) Guardar mensaje en subcolección
+        const msgData = {
+          content:   text,
+          mediaType,
+          mediaUrl,
+          sender:    'lead',
+          timestamp: new Date()
+        };
+        await db.collection('leads')
+                .doc(leadId)
+                .collection('messages')
+                .add(msgData);
       }
-
-      // 2) Guardar mensaje en subcolección
-      const msgData = {
-        content: text,
-        mediaType: text ? 'text' : null,
-        mediaUrl: null,
-        sender: 'lead',
-        timestamp: new Date()
-      };
-      await db.collection('leads').doc(leadId)
-              .collection('messages').add(msgData);
     }
+
+    // Siempre responder 200 lo antes posible
     return res.sendStatus(200);
   } catch (err) {
-    console.error('Error en webhook:', err);
+    console.error('[ERROR] en webhook:', err);
     return res.sendStatus(500);
   }
 });
