@@ -79,23 +79,24 @@ async function callWhatsAppAPI(path, body, config = {}) {
     const form = new FormData();
     form.append('file', fs.createReadStream(filePath));
     form.append('type', mimeType);
+    form.append('messaging_product', 'whatsapp');   // <— aquí
     const data = await callWhatsAppAPI('/media', form, {
       headers: form.getHeaders()
     });
     return data.id;
   }
 
-
 /** Envía un mensaje de audio por WhatsApp y lo guarda en Firestore. */
 export async function sendAudioMessage(phone, mediaId) {
   const to = normalize(phone);
+
+  // 1) Enviar la nota de voz usando mediaId
   await callWhatsAppAPI('/messages', {
     messaging_product: 'whatsapp',
     to,
     type: 'audio',
     audio: { id: mediaId }
   });
-
   // 2) Guardar en Firestore bajo sender 'business'
   const q = await db
     .collection('leads')
