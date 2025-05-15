@@ -14,8 +14,9 @@ import ffmpeg from 'fluent-ffmpeg';
 import ffmpegInstaller from '@ffmpeg-installer/ffmpeg';
 import admin from 'firebase-admin';
 import { db } from './firebaseAdmin.js';
-import { sendTextMessage, sendAudioMessage } from './whatsappService.js';
+import { sendTextMessage, sendAudioMessage, uploadMedia } from './whatsappService.js';
 import { processSequences, generateLetras, sendLetras } from './scheduler.js';
+
 
 
 
@@ -67,42 +68,23 @@ app.post('/api/whatsapp/send-message', async (req, res) => {
 /**  
  * Endpoint para enviar nota de voz  
  */
-app.post(
-  '/api/whatsapp/send-audio',
-  upload.single('audio'),
-  async (req, res) => {
-    console.log('[DEBUG] POST /api/whatsapp/send-audio', req.body);
-    const { phone } = req.body;
-    const uploadPath = req.file.path;
-    const m4aPath = `${uploadPath}.m4a`;
 
-    try {
-      // 1) Transcodifica a M4A (AAC)
-      await new Promise((resolve, reject) => {
-        ffmpeg(uploadPath)
-          .outputOptions(['-c:a aac', '-vn'])
-          .toFormat('mp4')
-          .save(m4aPath)
-          .on('end', resolve)
-          .on('error', reject);
-      });
 
-      // 2) Envía la nota de voz
-      await sendAudioMessage(phone, m4aPath);
-
-      // 3) Limpia archivos
-      fs.unlinkSync(uploadPath);
-      fs.unlinkSync(m4aPath);
-
-      return res.json({ success: true });
-    } catch (err) {
-      console.error('Error enviando audio:', err);
-      try { fs.unlinkSync(uploadPath); } catch {}
-      try { fs.unlinkSync(m4aPath); } catch {}
-      return res.status(500).json({ error: err.message });
-    }
+app.post('/api/whatsapp/send-audio', upload.single('audio'), async (req, res) => {
+  const { phone } = req.body;
+  const uploadPath = req.file.path;
+  const mimeType   = req.file.mimetype;
+  try {
+    const mediaId = await uploadMedia(uploadPath, mimeType);
+    await sendAudioMessage(phone, mediaId);
+    fs.unlinkSync(uploadPath);
+    return res.json({ success: true });
+  } catch (err) {
+    console.error('Error enviando audio:', err);
+    try { fs.unlinkSync(uploadPath); } catch {}
+    return res.status(500).json({ error: err.message });
   }
-);
+});
 
 /**  
  * Webhook de WhatsApp: Verificación  
