@@ -1,4 +1,7 @@
 // server.js
+
+import axios from 'axios';
+
 import express from 'express';
 import cors from 'cors';
 import bodyParser from 'body-parser';
@@ -14,8 +17,14 @@ import { db } from './firebaseAdmin.js';
 import { sendTextMessage, sendAudioMessage } from './whatsappService.js';
 import { processSequences, generateLetras, sendLetras } from './scheduler.js';
 
+
+
 dotenv.config();
 ffmpeg.setFfmpegPath(ffmpegInstaller.path);
+
+const TOKEN = process.env.WHATSAPP_TOKEN;
+const PHONEID = process.env.PHONE_NUMBER_ID;
+const GRAPH_PHONE_URL = `https://graph.facebook.com/v15.0/${PHONEID}`;
 
 const app = express();
 const port = process.env.PORT || 3001;
@@ -114,13 +123,29 @@ app.get('/webhook', (req, res) => {
 app.get('/api/whatsapp/status', async (req, res) => {
   console.log('[DEBUG] GET /api/whatsapp/status');
   try {
-    const ok = !!(process.env.WHATSAPP_TOKEN && process.env.PHONE_NUMBER_ID);
-    return res.json({ status: ok ? 'Conectado' : 'Desconectado' });
+    // Hacemos un request simple para validar token y número
+    const resp = await axios.get(GRAPH_PHONE_URL, {
+      params: {
+        access_token: TOKEN,
+        fields: 'display_phone_number'
+      }
+    });
+    // Si llegamos aquí, todo está OK
+    return res.json({
+      status: 'Conectado',
+      phone: resp.data.display_phone_number
+    });
   } catch (err) {
-    console.error('Error en status:', err);
-    return res.status(500).json({ status: 'Error' });
+    console.error('[ERROR] status check failed:', err.response?.data || err.message);
+    // 401, 400, 404, etc.
+    const code = err.response?.status || 500;
+    return res.status(code).json({
+      status: 'Desconectado',
+      error: err.response?.data?.error?.message || err.message
+    });
   }
 });
+
 
 /**
  * Número activo
