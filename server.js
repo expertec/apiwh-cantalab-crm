@@ -150,13 +150,17 @@ app.get('/api/whatsapp/status', async (req, res) => {
 /**
  * Número activo
  */
-app.get('/api/whatsapp/number', (req, res) => {
+app.get('/api/whatsapp/number', async (req, res) => {
   console.log('[DEBUG] GET /api/whatsapp/number');
-  const phone = process.env.PHONE_NUMBER_ID || '';
-  if (phone) {
-    return res.json({ phone });
+  try {
+    const resp = await axios.get(GRAPH_PHONE_URL, {
+      params: { access_token: TOKEN, fields: 'display_phone_number' }
+    });
+    return res.json({ phone: resp.data.display_phone_number });
+  } catch (err) {
+    console.error('[ERROR] number fetch failed:', err.response?.data || err.message);
+    return res.status(500).json({ error: err.response?.data?.error?.message || err.message });
   }
-  return res.status(500).json({ error: 'PHONE_NUMBER_ID no configurado' });
 });
 
 /**  
