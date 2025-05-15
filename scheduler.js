@@ -1,6 +1,6 @@
 // src/server/scheduler.js
 import { db } from './firebaseAdmin.js';
-import { sendTextMessage, sendAudioMessage } from './whatsappApiService.js';
+import { sendTextMessage, sendAudioMessage } from './whatsappService.js';
 import admin from 'firebase-admin';
 import { Configuration, OpenAIApi } from 'openai';
 
