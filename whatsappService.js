@@ -10,34 +10,29 @@ const TOKEN   = process.env.WHATSAPP_TOKEN;
 const PHONEID = process.env.PHONE_NUMBER_ID;
 const API_URL = `https://graph.facebook.com/v15.0/${PHONEID}/messages`;
 
-/**
- * Llama a la Cloud API de WhatsApp
- */
+/** Llama a la Cloud API de WhatsApp */
 async function callWhatsAppAPI(body) {
   return axios.post(API_URL, body, {
-    params: { access_token: TOKEN }
+    headers: { Authorization: `Bearer ${TOKEN}` }
   });
 }
 
-/**
- * Normaliza teléfono a E.164 sin '+'
- */
+/** Normaliza teléfono a E.164 sin '+' */
 function normalize(phone) {
   let num = String(phone).replace(/\D/g, '');
   if (num.length === 10) num = '52' + num;
   return num;
 }
 
-/**
- * Envía un mensaje de texto por WhatsApp y lo guarda en Firestore.
- */
+/** Envía un mensaje de texto por WhatsApp y lo guarda en Firestore. */
 export async function sendTextMessage(phone, text) {
   const to = normalize(phone);
 
-  // 1) Enviar por API oficial
+  // 1) Enviar por API oficial (añadimos `type: 'text'`)
   await callWhatsAppAPI({
     messaging_product: 'whatsapp',
     to,
+    type: 'text',
     text: { body: text }
   });
 
@@ -63,10 +58,7 @@ export async function sendTextMessage(phone, text) {
   }
 }
 
-/**
- * Envía un mensaje de audio por WhatsApp (usando un URL ya disponible) 
- * y lo guarda en Firestore.
- */
+/** Envía un mensaje de audio por WhatsApp y lo guarda en Firestore. */
 export async function sendAudioMessage(phone, mediaUrl) {
   const to = normalize(phone);
 
