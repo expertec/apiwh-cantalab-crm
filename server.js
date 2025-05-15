@@ -1,6 +1,7 @@
 // server.js
 
 import axios from 'axios';
+
 import express from 'express';
 import cors from 'cors';
 import bodyParser from 'body-parser';
@@ -12,10 +13,11 @@ import fs from 'fs';
 import ffmpeg from 'fluent-ffmpeg';
 import ffmpegInstaller from '@ffmpeg-installer/ffmpeg';
 import admin from 'firebase-admin';
-
 import { db } from './firebaseAdmin.js';
-import { sendTextMessage, sendAudioMessage, uploadMedia } from './whatsappService.js';
+import { sendTextMessage, sendAudioMessage } from './whatsappService.js';
 import { processSequences, generateLetras, sendLetras } from './scheduler.js';
+
+
 
 dotenv.config();
 ffmpeg.setFfmpegPath(ffmpegInstaller.path);
@@ -65,42 +67,50 @@ app.post('/api/whatsapp/send-message', async (req, res) => {
 /**  
  * Endpoint para enviar nota de voz  
  */
-app.post('/api/whatsapp/send-audio', upload.single('audio'), async (req, res) => {
-  const { phone } = req.body;
-  // Multer deja el archivo sin extensión, vamos a renombrarlo según su mimetype
-  const originalPath = req.file.path;
-  // Escoge la extensión y MIME que reconoce WhatsApp
-  const isOgg = req.file.mimetype === 'audio/ogg' || req.file.mimetype === 'audio/opus';
-  const ext      = isOgg ? '.ogg' : '.m4a';
-  const mime     = isOgg ? 'audio/ogg' : 'audio/mp4';
-  const uploadPath = originalPath + ext;
+app.post(
+  '/api/whatsapp/send-audio',
+  upload.single('audio'),
+  async (req, res) => {
+    console.log('[DEBUG] POST /api/whatsapp/send-audio', req.body);
+    const { phone } = req.body;
+    const uploadPath = req.file.path;
+    const m4aPath = `${uploadPath}.m4a`;
 
-  // Renombramos el archivo (123abc → 123abc.m4a o .ogg)
-  fs.renameSync(originalPath, uploadPath);
+    try {
+      // 1) Transcodifica a M4A (AAC)
+      await new Promise((resolve, reject) => {
+        ffmpeg(uploadPath)
+          .outputOptions(['-c:a aac', '-vn'])
+          .toFormat('mp4')
+          .save(m4aPath)
+          .on('end', resolve)
+          .on('error', reject);
+      });
 
-  try {
-    // 1) Sube el medio y obtiene mediaId
-    const mediaId = await uploadMedia(uploadPath, mime);
-    // 2) Envía la nota de voz usando ese mediaId
-    await sendAudioMessage(phone, mediaId);
-    // 3) Limpia el archivo temporal
-    fs.unlinkSync(uploadPath);
-    return res.json({ success: true });
-  } catch (err) {
-    console.error('Error enviando audio:', err);
-    // Limpieza en caso de error
-    try { fs.unlinkSync(uploadPath); } catch {}
-    return res.status(500).json({ error: err.message });
+      // 2) Envía la nota de voz
+      await sendAudioMessage(phone, m4aPath);
+
+      // 3) Limpia archivos
+      fs.unlinkSync(uploadPath);
+      fs.unlinkSync(m4aPath);
+
+      return res.json({ success: true });
+    } catch (err) {
+      console.error('Error enviando audio:', err);
+      try { fs.unlinkSync(uploadPath); } catch {}
+      try { fs.unlinkSync(m4aPath); } catch {}
+      return res.status(500).json({ error: err.message });
+    }
   }
-});
+);
 
 /**  
  * Webhook de WhatsApp: Verificación  
  */
 app.get('/webhook', (req, res) => {
   console.log('[DEBUG] GET /webhook verify');
-  const mode      = req.query['hub.mode'];
-  const token     = req.query['hub.verify_token'];
+  const mode = req.query['hub.mode'];
+  const token = req.query['hub.verify_token'];
   const challenge = req.query['hub.challenge'];
   if (mode === 'subscribe' && token === process.env.WHATSAPP_VERIFY_TOKEN) {
     return res.send(challenge);
@@ -114,15 +124,21 @@ app.get('/webhook', (req, res) => {
 app.get('/api/whatsapp/status', async (req, res) => {
   console.log('[DEBUG] GET /api/whatsapp/status');
   try {
+    // Hacemos un request simple para validar token y número
     const resp = await axios.get(GRAPH_PHONE_URL, {
-      params: { access_token: TOKEN, fields: 'display_phone_number' }
+      params: {
+        access_token: TOKEN,
+        fields: 'display_phone_number'
+      }
     });
+    // Si llegamos aquí, todo está OK
     return res.json({
       status: 'Conectado',
       phone: resp.data.display_phone_number
     });
   } catch (err) {
     console.error('[ERROR] status check failed:', err.response?.data || err.message);
+    // 401, 400, 404, etc.
     const code = err.response?.status || 500;
     return res.status(code).json({
       status: 'Desconectado',
@@ -130,6 +146,7 @@ app.get('/api/whatsapp/status', async (req, res) => {
     });
   }
 });
+
 
 /**
  * Número activo
@@ -150,22 +167,25 @@ app.get('/api/whatsapp/number', async (req, res) => {
 /**  
  * Webhook de WhatsApp: Mensajes entrantes  
  */
+
 app.post('/webhook', async (req, res) => {
   console.log('[DEBUG] POST /webhook payload:', JSON.stringify(req.body).slice(0,200));
   try {
+  
     const entryChanges = req.body.entry?.flatMap(e => e.changes) || [];
     for (const change of entryChanges) {
       const messages = change.value?.messages || [];
       for (const msg of messages) {
-        const from      = msg.from;
-        const text      = msg.text?.body || '';
+        const from = msg.from;                             // e.g. "521234567890"
+        const text = msg.text?.body || '';
+        // Detectar media (url si ya has implementado la descarga previa)
         const mediaType = msg.image ? 'image'
                          : msg.audio ? 'audio'
-                         : text      ? 'text'
+                         : text         ? 'text'
                          : null;
         const mediaUrl  = msg.image?.url || msg.audio?.url || null;
 
-        // Upsert de lead
+        // 1) Upsert de lead
         const q = await db.collection('leads')
                           .where('telefono','==', from)
                           .limit(1)
@@ -179,11 +199,11 @@ app.post('/webhook', async (req, res) => {
 
           const newLead = await db.collection('leads').add({
             telefono: from,
-            nombre:   msg.pushName || '',
-            source:   'WhatsApp',
+            nombre:  msg.pushName || '',
+            source:  'WhatsApp',
             fecha_creacion: now,
-            estado:   'nuevo',
-            etiquetas:[trigger],
+            estado:  'nuevo',
+            etiquetas: [trigger],
             secuenciasActivas: [{ trigger, startTime: now.toISOString(), index: 0 }],
             unreadCount: 1,
             lastMessageAt: now
@@ -197,19 +217,22 @@ app.post('/webhook', async (req, res) => {
           });
         }
 
-        // Guardar mensaje
+        // 2) Guardar mensaje en subcolección
+        const msgData = {
+          content:   text,
+          mediaType,
+          mediaUrl,
+          sender:    'lead',
+          timestamp: new Date()
+        };
         await db.collection('leads')
                 .doc(leadId)
                 .collection('messages')
-                .add({
-                  content:   text,
-                  mediaType,
-                  mediaUrl,
-                  sender:    'lead',
-                  timestamp: new Date()
-                });
+                .add(msgData);
       }
     }
+
+    // Siempre responder 200 lo antes posible
     return res.sendStatus(200);
   } catch (err) {
     console.error('[ERROR] en webhook:', err);
@@ -217,7 +240,7 @@ app.post('/webhook', async (req, res) => {
   }
 });
 
-// Scheduler: procesos periódicos
+// Scheduler: tus procesos periódicos
 cron.schedule('* * * * *', () => {
   processSequences().catch(err => console.error('Error en processSequences:', err));
 });
