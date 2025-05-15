@@ -12,8 +12,8 @@ import path from 'path';
 import fs from 'fs';
 import ffmpeg from 'fluent-ffmpeg';
 import ffmpegInstaller from '@ffmpeg-installer/ffmpeg';
-import admin from 'firebase-admin';
-import { db } from './firebaseAdmin.js';
+import { admin, db } from './firebaseAdmin.js';
+
 import { sendTextMessage, sendAudioMessage } from './whatsappService.js';
 import { processSequences, generateLetras, sendLetras } from './scheduler.js';
 
@@ -23,9 +23,6 @@ dotenv.config();
 ffmpeg.setFfmpegPath(ffmpegInstaller.path);
 
 
-admin.initializeApp({
-  storageBucket: process.env.FIREBASE_STORAGE_BUCKET
-});
 const bucket = admin.storage().bucket();
 
 const TOKEN = process.env.WHATSAPP_TOKEN;

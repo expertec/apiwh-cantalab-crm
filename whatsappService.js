@@ -67,37 +67,39 @@ async function callWhatsAppAPI(body) {
 
 
 /** Envía un mensaje de audio por WhatsApp y lo guarda en Firestore. */
-export async function sendAudioMessage(phone, mediaUrl) {
+/** Envía un mensaje de audio (ID o URL) por WhatsApp y lo guarda en Firestore. */
+export async function sendAudioMessage(phone, media) {
   const to = normalize(phone);
 
-  // 1) Enviar por API oficial
-  await callWhatsAppAPI({
+  // 1) Enviar la nota de voz: si media es URL, usa link; si no, id
+  const audioField = media.startsWith('http')
+    ? { link: media }
+    : { id: media };
+
+  await callWhatsAppAPI('/messages', {
     messaging_product: 'whatsapp',
     to,
     type: 'audio',
-    audio: { link: mediaUrl }
+    audio: audioField
   });
 
-  // 2) Guardar en Firestore
-  const q = await db.collection('leads')
-                  .where('telefono', '==', to)
-                  .limit(1)
-                  .get();
+  // 2) Guardado en Firestore igual que antes...
+  const q = await db
+    .collection('leads')
+    .where('telefono', '==', to)
+    .limit(1)
+    .get();
+
   if (!q.empty) {
     const leadId = q.docs[0].id;
     const msgData = {
-      content: '',
+      content:   '',            
       mediaType: 'audio',
-      mediaUrl,
-      sender: 'business',
+      mediaId:   media,         // puede ser ID o URL
+      sender:    'business',
       timestamp: new Date()
     };
-    await db.collection('leads')
-            .doc(leadId)
-            .collection('messages')
-            .add(msgData);
-    await db.collection('leads')
-            .doc(leadId)
-            .update({ lastMessageAt: msgData.timestamp });
+    await db.collection('leads').doc(leadId).collection('messages').add(msgData);
+    await db.collection('leads').doc(leadId).update({ lastMessageAt: msgData.timestamp });
   }
 }
