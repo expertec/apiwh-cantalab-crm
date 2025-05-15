@@ -1,6 +1,6 @@
 // src/server/scheduler.js
 import { db } from './firebaseAdmin.js';
-import { getWhatsAppSock } from './whatsappService.js';
+import { sendTextMessage, sendAudioMessage } from './whatsappApiService.js';
 import admin from 'firebase-admin';
 import { Configuration, OpenAIApi } from 'openai';
 
@@ -10,7 +10,6 @@ const { FieldValue } = admin.firestore;
 if (!process.env.OPENAI_API_KEY) {
   throw new Error("Falta la variable de entorno OPENAI_API_KEY");
 }
-
 // Configuración de OpenAI
 const configuration = new Configuration({
   apiKey: process.env.OPENAI_API_KEY,
@@ -33,23 +32,18 @@ function replacePlaceholders(template, leadData) {
 }
 
 /**
- * Envía un mensaje de WhatsApp según su tipo.
- * Usa exactamente el número que viene en lead.telefono (sin anteponer country code).
+ * Envía un mensaje de WhatsApp según su tipo usando la Cloud API.
  */
 async function enviarMensaje(lead, mensaje) {
   try {
-    const sock = getWhatsAppSock();
-    if (!sock) return;
-
     const phone = (lead.telefono || '').replace(/\D/g, '');
-    const jid = `${phone}@s.whatsapp.net`;
+    const content = replacePlaceholders(mensaje.contenido || '', lead).trim();
 
     switch (mensaje.type) {
-      case 'texto': {
-        const text = replacePlaceholders(mensaje.contenido, lead).trim();
-        if (text) await sock.sendMessage(jid, { text });
+      case 'texto':
+        if (content) await sendTextMessage(phone, content);
         break;
-      }
+
       case 'formulario': {
         const rawTemplate = mensaje.contenido || '';
         const nameVal = encodeURIComponent(lead.nombre || '');
@@ -58,27 +52,30 @@ async function enviarMensaje(lead, mensaje) {
           .replace('{{nombre}}', nameVal)
           .replace(/\r?\n/g, ' ')
           .trim();
-        if (text) await sock.sendMessage(jid, { text });
+        if (text) await sendTextMessage(phone, text);
         break;
       }
-      case 'audio':
-        await sock.sendMessage(jid, {
-          audio: { url: replacePlaceholders(mensaje.contenido, lead) },
-          ptt: true
-        });
+
+      case 'audio': {
+        const mediaUrl = replacePlaceholders(mensaje.contenido, lead);
+        await sendAudioMessage(phone, mediaUrl);
         break;
-      case 'imagen':
-        await sock.sendMessage(jid, {
-          image: { url: replacePlaceholders(mensaje.contenido, lead) }
-        });
+      }
+
+      case 'imagen': {
+        const mediaUrl = replacePlaceholders(mensaje.contenido, lead);
+        // Por simplicidad, enviamos el enlace como texto
+        await sendTextMessage(phone, mediaUrl);
         break;
-      case 'video':
-        await sock.sendMessage(jid, {
-          video: { url: replacePlaceholders(mensaje.contenido, lead) },
-          // si quieres un caption, descomenta la línea siguiente y añade mensaje.contenidoCaption en tu secuencia
-          // caption: replacePlaceholders(mensaje.contenidoCaption || '', lead)
-        });
+      }
+
+      case 'video': {
+        const mediaUrl = replacePlaceholders(mensaje.contenido, lead);
+        // Enviar el enlace de video como texto
+        await sendTextMessage(phone, mediaUrl);
         break;
+      }
+
       default:
         console.warn(`Tipo desconocido: ${mensaje.type}`);
     }
@@ -86,7 +83,6 @@ async function enviarMensaje(lead, mensaje) {
     console.error("Error al enviar mensaje:", err);
   }
 }
-
 
 /**
  * Procesa las secuencias activas de cada lead.
@@ -205,36 +201,27 @@ async function sendLetras() {
       const genTime = letraGeneratedAt.toDate().getTime();
       if (now - genTime < 15 * 60 * 1000) continue;
 
-      const sock = getWhatsAppSock();
-      if (!sock) continue;
-
       const phoneClean = leadPhone.replace(/\D/g, '');
-      const jid = `${phoneClean}@s.whatsapp.net`;
       const firstName = (requesterName || '').trim().split(' ')[0] || '';
 
       // 1) Mensaje de cierre
       const greeting = `Listo ${firstName}, ya terminé la letra para tu canción. *Léela y dime si te gusta.*`;
-      await sock.sendMessage(jid, { text: greeting });
+      await sendTextMessage(phoneClean, greeting);
       await db
         .collection('leads').doc(leadId).collection('messages')
         .add({ content: greeting, sender: 'business', timestamp: new Date() });
 
       // 2) Enviar la letra
-      await sock.sendMessage(jid, { text: letra });
+      await sendTextMessage(phoneClean, letra);
       await db
         .collection('leads').doc(leadId).collection('messages')
         .add({ content: letra, sender: 'business', timestamp: new Date() });
 
-      // 3) Enviar el video
-      await sock.sendMessage(jid, { video: { url: VIDEO_URL } });
+      // 3) Enviar el video como enlace de texto
+      await sendTextMessage(phoneClean, VIDEO_URL);
       await db
         .collection('leads').doc(leadId).collection('messages')
-        .add({
-          mediaType: 'video',
-          mediaUrl: VIDEO_URL,
-          sender: 'business',
-          timestamp: new Date()
-        });
+        .add({ mediaType: 'video', mediaUrl: VIDEO_URL, sender: 'business', timestamp: new Date() });
 
       // 4) Mensaje promocional
       const promo = `${firstName} el costo normal es de $1997 MXN pero tenemos la promocional esta semana de $697 MXN.\n\n` +
@@ -242,7 +229,7 @@ async function sendLetras() {
         `Cuenta: 4152 3143 2669 0826\nBanco: BBVA\nTitular: Iván Martínez Jiménez\n\n` +
         `🌐 Pago en línea o en dolares 🇺🇸 (45 USD):\n` +
         `https://cantalab.com/tu-cancion-mx/`;
-      await sock.sendMessage(jid, { text: promo });
+      await sendTextMessage(phoneClean, promo);
       await db
         .collection('leads').doc(leadId).collection('messages')
         .add({ content: promo, sender: 'business', timestamp: new Date() });
