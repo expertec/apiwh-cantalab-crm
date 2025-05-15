@@ -10,12 +10,6 @@ const TOKEN   = process.env.WHATSAPP_TOKEN;
 const PHONEID = process.env.PHONE_NUMBER_ID;
 const API_URL = `https://graph.facebook.com/v15.0/${PHONEID}/messages`;
 
-/** Llama a la Cloud API de WhatsApp */
-async function callWhatsAppAPI(body) {
-  return axios.post(API_URL, body, {
-    headers: { Authorization: `Bearer ${TOKEN}` }
-  });
-}
 
 /** Normaliza teléfono a E.164 sin '+' */
 function normalize(phone) {
@@ -27,15 +21,13 @@ function normalize(phone) {
 /** Envía un mensaje de texto por WhatsApp y lo guarda en Firestore. */
 export async function sendTextMessage(phone, text) {
   const to = normalize(phone);
-
-  // 1) Enviar por API oficial (añadimos `type: 'text'`)
+  console.log('[WA SERVICE] sendTextMessage a:', to, 'texto:', text);
   await callWhatsAppAPI({
     messaging_product: 'whatsapp',
     to,
     type: 'text',
     text: { body: text }
   });
-
   // 2) Guardar en Firestore
   const q = await db.collection('leads')
                   .where('telefono', '==', to)
@@ -57,6 +49,22 @@ export async function sendTextMessage(phone, text) {
             .update({ lastMessageAt: msgData.timestamp });
   }
 }
+
+
+async function callWhatsAppAPI(body) {
+  console.log('[WA API] Enviando a Graph API:', JSON.stringify(body));
+  try {
+    const resp = await axios.post(API_URL, body, {
+      headers: { Authorization: `Bearer ${TOKEN}` }
+    });
+    console.log('[WA API] Graph API respondió:', resp.data);
+    return resp.data;
+  } catch (err) {
+    console.error('[WA API][ERROR] Fallo Graph API:', err.response?.data || err.message);
+    throw err;
+  }
+}
+
 
 /** Envía un mensaje de audio por WhatsApp y lo guarda en Firestore. */
 export async function sendAudioMessage(phone, mediaUrl) {
