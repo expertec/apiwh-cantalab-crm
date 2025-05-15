@@ -1,15 +1,14 @@
-// whatsappApiService.js
+// whatsappService.js
 
 import axios from 'axios';
 import dotenv from 'dotenv';
-import admin from 'firebase-admin';
 import { db } from './firebaseAdmin.js';
 dotenv.config();
 
 const TOKEN   = process.env.WHATSAPP_TOKEN;
 const PHONEID = process.env.PHONE_NUMBER_ID;
-const API_URL = `https://graph.facebook.com/v15.0/${PHONEID}/messages`;
-
+// Base URL para todas las llamadas (sin “/messages”)
+const API_BASE = `https://graph.facebook.com/v15.0/${PHONEID}`;
 
 /** Normaliza teléfono a E.164 sin '+' */
 function normalize(phone) {
@@ -18,17 +17,41 @@ function normalize(phone) {
   return num;
 }
 
+/** Llama a la WhatsApp Cloud API */
+async function callWhatsAppAPI(path, body, config = {}) {
+  const url = API_BASE + path;
+  console.log(`[WA API] POST ${path}:`, body);
+
+  const axiosConfig = {
+    params: { access_token: TOKEN },
+    headers: {
+      'Content-Type': 'application/json',
+      ...(config.headers || {}),
+    },
+    ...config,
+  };
+
+  try {
+    const resp = await axios.post(url, body, axiosConfig);
+    console.log(`[WA API] ${path} respondió:`, resp.data);
+    return resp.data;
+  } catch (err) {
+    console.error(`[WA API][ERROR] ${path}:`, err.response?.data || err.message);
+    throw err;
+  }
+}
+
 /** Envía un mensaje de texto por WhatsApp y lo guarda en Firestore. */
 export async function sendTextMessage(phone, text) {
   const to = normalize(phone);
-  console.log('[WA SERVICE] sendTextMessage a:', to, 'texto:', text);
-  await callWhatsAppAPI({
+  await callWhatsAppAPI('/messages', {
     messaging_product: 'whatsapp',
     to,
     type: 'text',
     text: { body: text }
   });
-  // 2) Guardar en Firestore
+
+  // Guardar en Firestore
   const q = await db.collection('leads')
                   .where('telefono', '==', to)
                   .limit(1)
@@ -40,38 +63,14 @@ export async function sendTextMessage(phone, text) {
       sender: 'business',
       timestamp: new Date()
     };
-    await db.collection('leads')
-            .doc(leadId)
-            .collection('messages')
-            .add(msgData);
-    await db.collection('leads')
-            .doc(leadId)
-            .update({ lastMessageAt: msgData.timestamp });
+    await db.collection('leads').doc(leadId).collection('messages').add(msgData);
+    await db.collection('leads').doc(leadId).update({ lastMessageAt: msgData.timestamp });
   }
 }
 
-
-async function callWhatsAppAPI(body) {
-  console.log('[WA API] Enviando a Graph API:', JSON.stringify(body));
-  try {
-    const resp = await axios.post(API_URL, body, {
-      headers: { Authorization: `Bearer ${TOKEN}` }
-    });
-    console.log('[WA API] Graph API respondió:', resp.data);
-    return resp.data;
-  } catch (err) {
-    console.error('[WA API][ERROR] Fallo Graph API:', err.response?.data || err.message);
-    throw err;
-  }
-}
-
-
-/** Envía un mensaje de audio por WhatsApp y lo guarda en Firestore. */
 /** Envía un mensaje de audio (ID o URL) por WhatsApp y lo guarda en Firestore. */
 export async function sendAudioMessage(phone, media) {
   const to = normalize(phone);
-
-  // 1) Enviar la nota de voz: si media es URL, usa link; si no, id
   const audioField = media.startsWith('http')
     ? { link: media }
     : { id: media };
@@ -83,19 +82,17 @@ export async function sendAudioMessage(phone, media) {
     audio: audioField
   });
 
-  // 2) Guardado en Firestore igual que antes...
-  const q = await db
-    .collection('leads')
-    .where('telefono', '==', to)
-    .limit(1)
-    .get();
-
+  // Guardar en Firestore
+  const q = await db.collection('leads')
+                  .where('telefono', '==', to)
+                  .limit(1)
+                  .get();
   if (!q.empty) {
     const leadId = q.docs[0].id;
     const msgData = {
-      content:   '',            
+      content:   '',
       mediaType: 'audio',
-      mediaId:   media,         // puede ser ID o URL
+      mediaId:   media,
       sender:    'business',
       timestamp: new Date()
     };
