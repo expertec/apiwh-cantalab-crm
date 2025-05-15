@@ -22,6 +22,12 @@ import { processSequences, generateLetras, sendLetras } from './scheduler.js';
 dotenv.config();
 ffmpeg.setFfmpegPath(ffmpegInstaller.path);
 
+
+admin.initializeApp({
+  storageBucket: process.env.FIREBASE_STORAGE_BUCKET
+});
+const bucket = admin.storage().bucket();
+
 const TOKEN = process.env.WHATSAPP_TOKEN;
 const PHONEID = process.env.PHONE_NUMBER_ID;
 const GRAPH_PHONE_URL = `https://graph.facebook.com/v15.0/${PHONEID}`;
@@ -99,6 +105,55 @@ app.post(
       console.error('Error enviando audio:', err);
       try { fs.unlinkSync(uploadPath); } catch {}
       try { fs.unlinkSync(m4aPath); } catch {}
+      return res.status(500).json({ error: err.message });
+    }
+  }
+);
+
+
+// NUEVA ruta para los audios del chat
+app.post(
+  '/api/whatsapp/send-chat-audio',
+  upload.single('audio'),
+  async (req, res) => {
+    try {
+      const { phone }   = req.body;
+      const uploadPath  = req.file.path;
+      const m4aPath     = `${uploadPath}.m4a`;
+
+      // 1) Transcodifica a M4A
+      await new Promise((resolve, reject) => {
+        ffmpeg(uploadPath)
+          .outputOptions(['-c:a aac', '-vn'])
+          .toFormat('mp4')
+          .save(m4aPath)
+          .on('end', resolve)
+          .on('error', reject);
+      });
+
+      // 2) Súbelo a Firebase Storage
+      const dest = `chat-audios/${path.basename(m4aPath)}`;
+      await bucket.upload(m4aPath, {
+        destination: dest,
+        metadata: { contentType: 'audio/mp4' }
+      });
+      const [url] = await bucket
+        .file(dest)
+        .getSignedUrl({ action: 'read', expires: Date.now() + 86400000 });
+
+      // 3) Envía al usuario con link
+      await sendAudioMessage(phone, url);
+
+      // 4) Limpia archivos temporales
+      fs.unlinkSync(uploadPath);
+      fs.unlinkSync(m4aPath);
+
+      return res.json({ success: true });
+    } catch (err) {
+      console.error('Error en send-chat-audio:', err);
+      // limpia temporales aunque falle
+      try { fs.unlinkSync(req.file.path) } catch {}
+      try { fs.unlinkSync(m4aPath) } catch {}
       return res.status(500).json({ error: err.message });
     }
   }
