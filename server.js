@@ -15,7 +15,6 @@ import { sendTextMessage, sendAudioMessage } from './whatsappService.js';
 import { processSequences, generateLetras, sendLetras } from './scheduler.js';
 
 dotenv.config();
-// Dile a fluent-ffmpeg dónde está el binario
 ffmpeg.setFfmpegPath(ffmpegInstaller.path);
 
 const app = express();
@@ -31,18 +30,23 @@ app.use(bodyParser.json());
  * Endpoint para enviar mensaje de texto  
  */
 app.post('/api/whatsapp/send-message', async (req, res) => {
-  const { leadId, message } = req.body;
-  if (!leadId || !message) {
-    return res.status(400).json({ error: 'Faltan leadId o message en el body' });
+  console.log('[DEBUG] POST /api/whatsapp/send-message', req.body);
+  const { leadId, phone, message } = req.body;
+  if (!message || (!leadId && !phone)) {
+    return res.status(400).json({ error: 'Faltan message y leadId o phone' });
   }
 
   try {
-    const leadSnap = await db.collection('leads').doc(leadId).get();
-    if (!leadSnap.exists) {
-      return res.status(404).json({ error: 'Lead no encontrado' });
+    let numero = phone;
+    if (leadId) {
+      const leadSnap = await db.collection('leads').doc(leadId).get();
+      if (!leadSnap.exists) {
+        return res.status(404).json({ error: 'Lead no encontrado' });
+      }
+      numero = leadSnap.data().telefono;
     }
-    const { telefono } = leadSnap.data();
-    await sendTextMessage(telefono, message);
+
+    await sendTextMessage(numero, message);
     return res.json({ success: true });
   } catch (err) {
     console.error('Error enviando texto:', err);
@@ -57,6 +61,7 @@ app.post(
   '/api/whatsapp/send-audio',
   upload.single('audio'),
   async (req, res) => {
+    console.log('[DEBUG] POST /api/whatsapp/send-audio', req.body);
     const { phone } = req.body;
     const uploadPath = req.file.path;
     const m4aPath = `${uploadPath}.m4a`;
@@ -93,6 +98,7 @@ app.post(
  * Webhook de WhatsApp: Verificación  
  */
 app.get('/webhook', (req, res) => {
+  console.log('[DEBUG] GET /webhook verify');
   const mode = req.query['hub.mode'];
   const token = req.query['hub.verify_token'];
   const challenge = req.query['hub.challenge'];
@@ -102,18 +108,44 @@ app.get('/webhook', (req, res) => {
   return res.sendStatus(403);
 });
 
+/**
+ * Estado de conexión (simple)
+ */
+app.get('/api/whatsapp/status', async (req, res) => {
+  console.log('[DEBUG] GET /api/whatsapp/status');
+  try {
+    const ok = !!(process.env.WHATSAPP_TOKEN && process.env.PHONE_NUMBER_ID);
+    return res.json({ status: ok ? 'Conectado' : 'Desconectado' });
+  } catch (err) {
+    console.error('Error en status:', err);
+    return res.status(500).json({ status: 'Error' });
+  }
+});
+
+/**
+ * Número activo
+ */
+app.get('/api/whatsapp/number', (req, res) => {
+  console.log('[DEBUG] GET /api/whatsapp/number');
+  const phone = process.env.PHONE_NUMBER_ID || '';
+  if (phone) {
+    return res.json({ phone });
+  }
+  return res.status(500).json({ error: 'PHONE_NUMBER_ID no configurado' });
+});
+
 /**  
  * Webhook de WhatsApp: Mensajes entrantes  
  */
 app.post('/webhook', async (req, res) => {
+  console.log('[DEBUG] POST /webhook', JSON.stringify(req.body).slice(0,200));
   try {
     const entry = req.body.entry?.[0];
     const changes = entry?.changes?.[0];
     const msg = changes?.value?.messages?.[0];
     if (msg) {
-      const from = msg.from;              // e.g. "521234567890"
-      const text = msg.text?.body || '';  // texto si existe
-      // Para media: msg.image?.id, msg.audio?.id, etc. tendrás que descargar con la Cloud API.
+      const from = msg.from;
+      const text = msg.text?.body || '';
 
       // 1) Upsert de lead
       const q = await db.collection('leads')
@@ -141,7 +173,6 @@ app.post('/webhook', async (req, res) => {
         leadId = newLead.id;
       } else {
         leadId = q.docs[0].id;
-        // Incrementa contador
         await db.collection('leads').doc(leadId).update({
           unreadCount: FieldValue.increment(1),
           lastMessageAt: new Date()
