@@ -1,6 +1,7 @@
 // src/server/scheduler.js
 import { db } from './firebaseAdmin.js';
 import { sendTextMessage, sendAudioMessage, sendVideoMessage} from './whatsappService.js';
+
 import admin from 'firebase-admin';
 import { Configuration, OpenAIApi } from 'openai';
 
@@ -57,6 +58,7 @@ async function enviarMensaje(lead, mensaje) {
       }
 
       case 'audio': {
+        
         const mediaUrl = replacePlaceholders(mensaje.contenido, lead);
         await sendAudioMessage(phone, mediaUrl);
         break;
@@ -192,6 +194,7 @@ async function sendLetras() {
     const now = Date.now();
     const snap = await db.collection('letras').where('status', '==', 'enviarLetra').get();
     const VIDEO_URL = 'https://cantalab.com/wp-content/uploads/2025/04/WhatsApp-Video-2025-04-23-at-8.01.51-PM.mp4';
+    const AUDIO_URL = 'https://cantalab.com/wp-content/uploads/2024/11/JTKlhy_inbox.oga';
 
     for (const docSnap of snap.docs) {
       const data = docSnap.data();
@@ -216,6 +219,12 @@ async function sendLetras() {
       await db
         .collection('leads').doc(leadId).collection('messages')
         .add({ content: letra, sender: 'business', timestamp: new Date() });
+
+          // 2.5) Enviar audio introductorio
+      await sendAudioMessage(phoneClean, AUDIO_URL);
+      await db
+      .collection('leads').doc(leadId).collection('messages')
+     
 
       // 3) Enviar el video como enlace de texto
       await sendVideoMessage(phoneClean, VIDEO_URL);

@@ -3,6 +3,7 @@
 import axios from 'axios';
 import dotenv from 'dotenv';
 import { db } from './firebaseAdmin.js';
+
 dotenv.config();
 
 const TOKEN   = process.env.WHATSAPP_TOKEN;
