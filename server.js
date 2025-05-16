@@ -242,12 +242,12 @@ app.post('/webhook', async (req, res) => {
           // WhatsApp devuelve el id de la media
           const mediaId = msg.image?.id || msg.document?.id || msg.audio?.id;
           if (mediaId) {
-            // Pedimos a Graph API la URL pública
-            const resp = await axios.get(
-              `https://graph.facebook.com/v15.0/${mediaId}`,
-              { params: { access_token: TOKEN, fields: 'url' } }
-            );
-            mediaUrl = resp.data.url;
+             const resp = await axios.get(
+                 `https://graph.facebook.com/v15.0/${mediaId}`,
+                 { params: { access_token: TOKEN, fields: 'url' } }
+               );
+               // ¡importante! le agregamos el token para que devuelva el binario real
+               mediaUrl = `${resp.data.url}?access_token=${TOKEN}`;
           }
         } else {
           mediaType = text ? 'text' : null;
