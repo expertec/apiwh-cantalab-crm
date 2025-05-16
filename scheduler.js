@@ -1,6 +1,6 @@
 // src/server/scheduler.js
 import { db } from './firebaseAdmin.js';
-import { sendTextMessage, sendAudioMessage, sendVideoMessage } from './whatsappService.js';
+import { sendTextMessage, sendAudioMessage, sendVideoMessage} from './whatsappService.js';
 import admin from 'firebase-admin';
 import { Configuration, OpenAIApi } from 'openai';
 
@@ -218,11 +218,11 @@ async function sendLetras() {
         .add({ content: letra, sender: 'business', timestamp: new Date() });
 
       // 3) Enviar el video como enlace de texto
-      await sendTextMessage(phoneClean, VIDEO_URL);
+      await sendVideoMessage(phoneClean, VIDEO_URL);
       await db
         .collection('leads').doc(leadId).collection('messages')
+       
         .add({ mediaType: 'video', mediaUrl: VIDEO_URL, sender: 'business', timestamp: new Date() });
-
       // 4) Mensaje promocional
       const promo = `${firstName} el costo normal es de $1997 MXN pero tenemos la promocional esta semana de $697 MXN.\n\n` +
         `Puedes pagar en esta cuenta:\n\n🏦 Transferencia bancaria:\n` +
