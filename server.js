@@ -342,6 +342,30 @@ if (msg.image || msg.document || msg.audio) {
   }
 });
 
+/**
+ * Proxy para media: descarga desde WhatsApp o Firebase y reenvía al cliente
+ */
+app.get('/api/media', async (req, res) => {
+  const { url } = req.query;
+  if (!url) return res.status(400).send('Missing url');
+
+  try {
+    // baja el stream original (incluye token en url si viene)
+    const response = await axios.get(url, {
+      responseType: 'stream',
+      // si tu URL requiere Authorization en header en lugar de query:
+      // headers: { Authorization: `Bearer ${TOKEN}` }
+    });
+
+    // reenvía content-type al cliente
+    res.setHeader('Content-Type', response.headers['content-type']);
+    response.data.pipe(res);
+  } catch (err) {
+    console.error('Error proxy /api/media:', err.message);
+    res.sendStatus(500);
+  }
+});
+
 
 // Scheduler: tus procesos periódicos
 cron.schedule('* * * * *', () => {
