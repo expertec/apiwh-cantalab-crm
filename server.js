@@ -230,28 +230,61 @@ app.post('/webhook', async (req, res) => {
         const from = msg.from;                  // e.g. "521234567890"
         const text = msg.text?.body || '';
 
-        // ——— BLOQUE UNIFICADO: resolución de mediaId → mediaUrl ———
-        let mediaType = null;
-        let mediaUrl  = null;
+        // ——— BLOQUE UNIFICADO: baja de WhatsApp → sube a Storage → mediaUrl final ———
+let mediaType = null;
+let mediaUrl  = null;
 
-        if (msg.image || msg.document || msg.audio) {
-          if (msg.image)       mediaType = 'image';
-          else if (msg.document) mediaType = 'pdf';
-          else if (msg.audio)    mediaType = 'audio';
+if (msg.image || msg.document || msg.audio) {
+  // 1) Tipo de media
+  if (msg.image)       mediaType = 'image';
+  else if (msg.document) mediaType = 'pdf';
+  else if (msg.audio)    mediaType = 'audio';
 
-          // WhatsApp devuelve el id de la media
-          const mediaId = msg.image?.id || msg.document?.id || msg.audio?.id;
-          if (mediaId) {
-             const resp = await axios.get(
-                 `https://graph.facebook.com/v15.0/${mediaId}`,
-                 { params: { access_token: TOKEN, fields: 'url' } }
-               );
-               // ¡importante! le agregamos el token para que devuelva el binario real
-               mediaUrl = `${resp.data.url}?access_token=${TOKEN}`;
-          }
-        } else {
-          mediaType = text ? 'text' : null;
-        }
+  const mediaId = msg.image?.id || msg.document?.id || msg.audio?.id;
+  if (mediaId) {
+    // 2) Pido URL temporal de Graph
+    const { data: { url: whatsappUrl } } = await axios.get(
+      `https://graph.facebook.com/v15.0/${mediaId}`,
+      { params: { access_token: TOKEN, fields: 'url' } }
+    );
+
+    // 3) Descargo el binario
+    const ext = mediaType === 'image' ? 'jpg'
+              : mediaType === 'pdf'   ? 'pdf'
+              : 'mp4';
+    const tmpPath = path.resolve('./uploads', `${mediaId}.${ext}`);
+    const writer = fs.createWriteStream(tmpPath);
+    const response = await axios.get(whatsappUrl, {
+      responseType: 'stream',
+      params: { access_token: TOKEN }
+    });
+    await new Promise((res, rej) => {
+      response.data.pipe(writer);
+      writer.on('finish', res);
+      writer.on('error', rej);
+    });
+
+    // 4) Subo a Firebase Storage
+    const dest = `chat-media/${mediaId}.${ext}`;
+    await bucket.upload(tmpPath, {
+      destination: dest,
+      metadata: { contentType: response.headers['content-type'] }
+    });
+    // limpio tmp
+    fs.unlinkSync(tmpPath);
+
+    // 5) Genero signed URL
+    const [signedUrl] = await bucket
+      .file(dest)
+      .getSignedUrl({ action: 'read', expires: Date.now() + 24*60*60*1000 });
+
+    mediaUrl = signedUrl;
+  }
+} else {
+  mediaType = text ? 'text' : null;
+}
+// ——————————————————————————————————————————————————————————
+
         // ——————————————————————————————————————————————————————————
 
         // 1) Upsert de lead
