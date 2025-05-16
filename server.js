@@ -354,6 +354,33 @@ cron.schedule('* * * * *', () => {
   sendLetras().catch(err => console.error('Error en sendLetras:', err));
 });
 
+
+// Debe ir antes de app.listen(...)
+app.get('/api/media', async (req, res) => {
+  const { url } = req.query;
+  if (!url) {
+    return res.status(400).send('url missing');
+  }
+  try {
+    // hacemos fetch del stream
+    const resp = await axios.get(url, {
+      responseType: 'stream',
+      // si haces WA attachments, necesitas token:
+      params: resp => resp.url.includes('lookaside.fbsbx.com')
+        ? { access_token: TOKEN }
+        : {},
+    });
+    // cabeceras CORS y de tipo
+    res.set('Access-Control-Allow-Origin', '*');
+    res.set('Content-Type', resp.headers['content-type']);
+    // redirigimos el stream al cliente
+    resp.data.pipe(res);
+  } catch (err) {
+    console.error('Media proxy error:', err.message);
+    res.sendStatus(500);
+  }
+});
+
 // Arranca el servidor
 app.listen(port, () => {
   console.log(`Servidor corriendo en puerto ${port}`);
