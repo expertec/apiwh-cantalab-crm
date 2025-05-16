@@ -256,7 +256,7 @@ if (msg.image || msg.document || msg.audio) {
     const writer = fs.createWriteStream(tmpPath);
     const response = await axios.get(whatsappUrl, {
       responseType: 'stream',
-      params: { access_token: TOKEN }
+      headers: { Authorization: `Bearer ${TOKEN}` }
     });
     await new Promise((res, rej) => {
       response.data.pipe(writer);
