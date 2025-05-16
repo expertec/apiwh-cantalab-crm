@@ -1,6 +1,6 @@
 // src/server/scheduler.js
 import { db } from './firebaseAdmin.js';
-import { sendTextMessage, sendAudioMessage } from './whatsappService.js';
+import { sendTextMessage, sendAudioMessage, sendVideoMessage } from './whatsappService.js';
 import admin from 'firebase-admin';
 import { Configuration, OpenAIApi } from 'openai';
 
@@ -71,8 +71,8 @@ async function enviarMensaje(lead, mensaje) {
 
       case 'video': {
         const mediaUrl = replacePlaceholders(mensaje.contenido, lead);
-        // Enviar el enlace de video como texto
-        await sendTextMessage(phone, mediaUrl);
+           // Enviar el vídeo usando la API nativa de vídeo
+           await sendVideoMessage(phone, mediaUrl);
         break;
       }
 

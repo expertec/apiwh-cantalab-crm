@@ -100,3 +100,36 @@ export async function sendAudioMessage(phone, media) {
     await db.collection('leads').doc(leadId).update({ lastMessageAt: msgData.timestamp });
   }
 }
+
+/** Envía un mensaje de vídeo (ID o URL) por WhatsApp y lo guarda en Firestore. */
+export async function sendVideoMessage(phone, media) {
+    const to = normalize(phone);
+    const videoField = media.startsWith('http')
+      ? { link: media }
+      : { id: media };
+  
+    await callWhatsAppAPI('/messages', {
+      messaging_product: 'whatsapp',
+      to,
+      type: 'video',
+      video: videoField
+    });
+  
+    // Guardar en Firestore
+    const q = await db.collection('leads')
+                    .where('telefono', '==', to)
+                    .limit(1)
+                    .get();
+    if (!q.empty) {
+      const leadId = q.docs[0].id;
+      const msgData = {
+        content:   '',
+        mediaType: 'video',
+        mediaUrl:  media,
+        sender:    'business',
+        timestamp: new Date()
+      };
+      await db.collection('leads').doc(leadId).collection('messages').add(msgData);
+      await db.collection('leads').doc(leadId).update({ lastMessageAt: msgData.timestamp });
+    }
+  }
