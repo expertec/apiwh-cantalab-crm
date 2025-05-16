@@ -223,19 +223,36 @@ app.get('/api/whatsapp/number', async (req, res) => {
 app.post('/webhook', async (req, res) => {
   console.log('[DEBUG] POST /webhook payload:', JSON.stringify(req.body).slice(0,200));
   try {
-  
     const entryChanges = req.body.entry?.flatMap(e => e.changes) || [];
     for (const change of entryChanges) {
       const messages = change.value?.messages || [];
       for (const msg of messages) {
-        const from = msg.from;                             // e.g. "521234567890"
+        const from = msg.from;                  // e.g. "521234567890"
         const text = msg.text?.body || '';
-        // Detectar media (url si ya has implementado la descarga previa)
-        const mediaType = msg.image ? 'image'
-                         : msg.audio ? 'audio'
-                         : text         ? 'text'
-                         : null;
-        const mediaUrl  = msg.image?.url || msg.audio?.url || null;
+
+        // ——— BLOQUE UNIFICADO: resolución de mediaId → mediaUrl ———
+        let mediaType = null;
+        let mediaUrl  = null;
+
+        if (msg.image || msg.document || msg.audio) {
+          if (msg.image)       mediaType = 'image';
+          else if (msg.document) mediaType = 'pdf';
+          else if (msg.audio)    mediaType = 'audio';
+
+          // WhatsApp devuelve el id de la media
+          const mediaId = msg.image?.id || msg.document?.id || msg.audio?.id;
+          if (mediaId) {
+            // Pedimos a Graph API la URL pública
+            const resp = await axios.get(
+              `https://graph.facebook.com/v15.0/${mediaId}`,
+              { params: { access_token: TOKEN, fields: 'url' } }
+            );
+            mediaUrl = resp.data.url;
+          }
+        } else {
+          mediaType = text ? 'text' : null;
+        }
+        // ——————————————————————————————————————————————————————————
 
         // 1) Upsert de lead
         const q = await db.collection('leads')
@@ -291,6 +308,7 @@ app.post('/webhook', async (req, res) => {
     return res.sendStatus(500);
   }
 });
+
 
 // Scheduler: tus procesos periódicos
 cron.schedule('* * * * *', () => {
