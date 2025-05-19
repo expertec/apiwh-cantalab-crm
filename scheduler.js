@@ -198,42 +198,57 @@ async function sendLetras() {
 
     for (const docSnap of snap.docs) {
       const data = docSnap.data();
-      let { leadPhone, leadId, letra, requesterName, letraGeneratedAt } = data;
-      if (!leadPhone || !letra || !letraGeneratedAt) continue;
+      const { leadId, letra, requesterName, letraGeneratedAt } = data;
 
+      // 1) Validaciones básicas
+      if (!leadId || !letra || !letraGeneratedAt) continue;
       const genTime = letraGeneratedAt.toDate().getTime();
       if (now - genTime < 15 * 60 * 1000) continue;
 
-      const phoneClean = leadPhone.replace(/\D/g, '');
+      // 2) Hacer lookup del lead para obtener su número
+      const leadRef = db.collection('leads').doc(leadId);
+      const leadSnap = await leadRef.get();
+      if (!leadSnap.exists) {
+        console.warn(`Lead no encontrado: ${leadId}`);
+        continue;
+      }
+      const telefono = leadSnap.data().telefono || '';
+      const phoneClean = telefono.replace(/\D/g, '');
+      if (!/^\d{10,15}$/.test(phoneClean)) {
+        console.error(`Número inválido para lead ${leadId}: "${telefono}"`);
+        continue;
+      }
+
       const firstName = (requesterName || '').trim().split(' ')[0] || '';
 
-      // 1) Mensaje de cierre
+      // 3) Mensaje de cierre
       const greeting = `Listo ${firstName}, ya terminé la letra para tu canción. *Léela y dime si te gusta.*`;
       await sendTextMessage(phoneClean, greeting);
       await db
         .collection('leads').doc(leadId).collection('messages')
         .add({ content: greeting, sender: 'business', timestamp: new Date() });
 
-      // 2) Enviar la letra
+      // 4) Enviar la letra
       await sendTextMessage(phoneClean, letra);
       await db
         .collection('leads').doc(leadId).collection('messages')
         .add({ content: letra, sender: 'business', timestamp: new Date() });
 
-          // 2.5) Enviar audio introductorio
+      // 5) Enviar audio introductorio
       await sendAudioMessage(phoneClean, AUDIO_URL);
       await db
-      .collection('leads').doc(leadId).collection('messages')
-     
+        .collection('leads').doc(leadId).collection('messages')
+        .add({ mediaType: 'audio', mediaUrl: AUDIO_URL, sender: 'business', timestamp: new Date() });
 
-      // 3) Enviar el video como enlace de texto
+      // 6) Enviar el video como enlace de texto
       await sendVideoMessage(phoneClean, VIDEO_URL);
       await db
         .collection('leads').doc(leadId).collection('messages')
-       
         .add({ mediaType: 'video', mediaUrl: VIDEO_URL, sender: 'business', timestamp: new Date() });
-      // 4) Mensaje promocional
-      const promo = `${firstName} el costo normal es de $1997 MXN pero tenemos la promocional esta semana de $697 MXN.\n\n` +
+
+      // 7) Mensaje promocional
+      const promo =
+        `${firstName} el costo normal es de $1997 MXN pero tenemos la promocional esta semana de $697 MXN.\n\n` +
         `Puedes pagar en esta cuenta:\n\n🏦 Transferencia bancaria:\n` +
         `Cuenta: 4152 3143 2669 0826\nBanco: BBVA\nTitular: Iván Martínez Jiménez\n\n` +
         `🌐 Pago en línea o en dolares 🇺🇸 (45 USD):\n` +
@@ -243,23 +258,19 @@ async function sendLetras() {
         .collection('leads').doc(leadId).collection('messages')
         .add({ content: promo, sender: 'business', timestamp: new Date() });
 
-      // 5) Actualizar lead
-      if (leadId) {
-        await db.collection('leads').doc(leadId).update({
-          etiquetas: FieldValue.arrayUnion('LetraEnviada'),
-          secuenciasActivas: FieldValue.arrayUnion({
-            trigger: 'LetraEnviada',
-            startTime: new Date().toISOString(),
-            index: 0
-          })
-        });
-      }
-
-      // 6) Marcar documento como enviado
+      // 8) Actualizar lead y marcar letra enviada
+      await leadRef.update({
+        etiquetas: FieldValue.arrayUnion('LetraEnviada'),
+        secuenciasActivas: FieldValue.arrayUnion({
+          trigger: 'LetraEnviada',
+          startTime: new Date().toISOString(),
+          index: 0
+        })
+      });
       await docSnap.ref.update({ status: 'enviada' });
     }
   } catch (err) {
-    console.error("❌ Error en sendLetras:", err);
+    console.error('❌ Error en sendLetras:', err);
   }
 }
 
