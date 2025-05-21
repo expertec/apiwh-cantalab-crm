@@ -1,519 +1,21 @@
-// src/server/scheduler.js
-import { db } from './firebaseAdmin.js';
-import { sendTextMessage, sendAudioMessage, sendVideoMessage} from './whatsappService.js';
-import admin from 'firebase-admin';
-import { Configuration, OpenAIApi } from 'openai';
-import fetch from 'node-fetch';
+// server.js
+
 import axios from 'axios';
-const bucket = admin.storage().bucket();
 
-
-
-const { FieldValue } = admin.firestore;
-
-// Asegúrate de que la API key esté definida
-if (!process.env.OPENAI_API_KEY) {
-  throw new Error("Falta la variable de entorno OPENAI_API_KEY");
-}
-// Configuración de OpenAI
-const configuration = new Configuration({
-  apiKey: process.env.OPENAI_API_KEY,
-});
-const openai = new OpenAIApi(configuration);
-
-/**
- * Reemplaza placeholders en plantillas de texto.
- * {{campo}} se sustituye por leadData.campo si existe.
- */
-function replacePlaceholders(template, leadData) {
-  return template.replace(/\{\{(\w+)\}\}/g, (_, field) => {
-    const value = leadData[field] || '';
-    if (field === 'nombre') {
-      // devolver sólo la primera palabra del nombre completo
-      return value.split(' ')[0] || '';
-    }
-    return value;
-  });
-}
-
-/**
- * Envía un mensaje de WhatsApp según su tipo usando la Cloud API.
- */
-async function enviarMensaje(lead, mensaje) {
-  try {
-    const phone = (lead.telefono || '').replace(/\D/g, '');
-    const content = replacePlaceholders(mensaje.contenido || '', lead).trim();
-
-    switch (mensaje.type) {
-      case 'texto':
-        if (content) await sendTextMessage(phone, content);
-        break;
-
-      case 'formulario': {
-        const rawTemplate = mensaje.contenido || '';
-        const nameVal = encodeURIComponent(lead.nombre || '');
-        const text = rawTemplate
-          .replace('{{telefono}}', phone)
-          .replace('{{nombre}}', nameVal)
-          .replace(/\r?\n/g, ' ')
-          .trim();
-        if (text) await sendTextMessage(phone, text);
-        break;
-      }
-
-      case 'audio': {
-        
-        const mediaUrl = replacePlaceholders(mensaje.contenido, lead);
-        await sendAudioMessage(phone, mediaUrl);
-        break;
-      }
-
-      case 'imagen': {
-        const mediaUrl = replacePlaceholders(mensaje.contenido, lead);
-        // Por simplicidad, enviamos el enlace como texto
-        await sendTextMessage(phone, mediaUrl);
-        break;
-      }
-
-      case 'video': {
-        const mediaUrl = replacePlaceholders(mensaje.contenido, lead);
-           // Enviar el vídeo usando la API nativa de vídeo
-           await sendVideoMessage(phone, mediaUrl);
-        break;
-      }
-
-      default:
-        console.warn(`Tipo desconocido: ${mensaje.type}`);
-    }
-  } catch (err) {
-    console.error("Error al enviar mensaje:", err);
-  }
-}
-
-/**
- * Procesa las secuencias activas de cada lead.
- */
-async function processSequences() {
-  try {
-    const leadsSnap = await db
-      .collection('leads')
-      .where('secuenciasActivas', '!=', null)
-      .get();
-
-    for (const doc of leadsSnap.docs) {
-      const lead = { id: doc.id, ...doc.data() };
-      if (!Array.isArray(lead.secuenciasActivas) || !lead.secuenciasActivas.length) continue;
-
-      let dirty = false;
-      for (const seq of lead.secuenciasActivas) {
-        const { trigger, startTime, index } = seq;
-        const seqSnap = await db
-          .collection('secuencias')
-          .where('trigger', '==', trigger)
-          .get();
-        if (seqSnap.empty) continue;
-
-        const msgs = seqSnap.docs[0].data().messages;
-        if (index >= msgs.length) {
-          seq.completed = true;
-          dirty = true;
-          continue;
-        }
-
-        const msg = msgs[index];
-        const sendAt = new Date(startTime).getTime() + msg.delay * 60000;
-        if (Date.now() < sendAt) continue;
-
-        // Enviar y luego registrar en Firestore
-        await enviarMensaje(lead, msg);
-        await db
-          .collection('leads')
-          .doc(lead.id)
-          .collection('messages')
-          .add({
-            content: `Se envió el ${msg.type} de la secuencia ${trigger}`,
-            sender: 'system',
-            timestamp: new Date()
-          });
-
-        seq.index++;
-        dirty = true;
-      }
-
-      if (dirty) {
-        const rem = lead.secuenciasActivas.filter(s => !s.completed);
-        await db.collection('leads').doc(lead.id).update({ secuenciasActivas: rem });
-      }
-    }
-  } catch (err) {
-    console.error("Error en processSequences:", err);
-  }
-}
-
-/**
- * Genera letras para los registros en 'letras' con status 'Sin letra',
- * guarda la letra, marca status → 'enviarLetra' y añade marca de tiempo.
- */
-async function generateLetras() {
-  console.log("▶️ generateLetras: inicio");
-  try {
-    const snap = await db.collection('letras').where('status', '==', 'Sin letra').get();
-    console.log(`✔️ generateLetras: encontrados ${snap.size} registros con status 'Sin letra'`);
-    for (const docSnap of snap.docs) {
-      const data = docSnap.data();
-      const prompt = `Escribe una letra de canción con lenguaje simple que su estructura sea verso 1, verso 2, coro, verso 3, verso 4 y coro. Agrega titulo de la canción en negritas. No pongas datos personales que no se puedan confirmar. Agrega un coro cantable y memorable. Solo responde con la letra de la canción sin texto adicional. Propósito: ${data.purpose}. Nombre: ${data.includeName}. Anecdotas o fraces: ${data.anecdotes}`;
-      console.log(`📝 prompt para ${docSnap.id}:\n${prompt}`);
-
-      const response = await openai.createChatCompletion({
-        model: 'gpt-4o',
-        messages: [
-          { role: 'system', content: 'Eres un compositor creativo.' },
-          { role: 'user', content: prompt }
-        ]
-      });
-
-      const letra = response.data.choices?.[0]?.message?.content?.trim();
-      if (letra) {
-        console.log(`✅ letra generada para ${docSnap.id}`);
-        await docSnap.ref.update({
-          letra,
-          status: 'enviarLetra',
-          letraGeneratedAt: FieldValue.serverTimestamp()
-        });
-      }
-    }
-    console.log("▶️ generateLetras: finalizado");
-  } catch (err) {
-    console.error("❌ Error generateLetras:", err);
-  }
-}
-
-/**
- * Envía por WhatsApp las letras generadas (status 'enviarLetra'),
- * añade trigger 'LetraEnviada' al lead y marca status → 'enviada'.
- * Solo envía si han pasado al menos 15 minutos desde 'letraGeneratedAt'.
- */
-async function sendLetras() {
-  try {
-    const now = Date.now();
-    const snap = await db.collection('letras').where('status', '==', 'enviarLetra').get();
-    const VIDEO_URL = 'https://cantalab.com/wp-content/uploads/2025/04/WhatsApp-Video-2025-04-23-at-8.01.51-PM.mp4';
-    const AUDIO_URL = 'https://cantalab.com/wp-content/uploads/2024/11/JTKlhy_inbox.oga';
-
-    for (const docSnap of snap.docs) {
-      const data = docSnap.data();
-      const { leadId, letra, requesterName, letraGeneratedAt } = data;
-
-      // 1) Validaciones básicas
-      if (!leadId || !letra || !letraGeneratedAt) continue;
-      const genTime = letraGeneratedAt.toDate().getTime();
-      if (now - genTime < 15 * 60 * 1000) continue;
-
-      // 2) Hacer lookup del lead para obtener su número
-      const leadRef = db.collection('leads').doc(leadId);
-      const leadSnap = await leadRef.get();
-      if (!leadSnap.exists) {
-        console.warn(`Lead no encontrado: ${leadId}`);
-        continue;
-      }
-      const telefono = leadSnap.data().telefono || '';
-      const phoneClean = telefono.replace(/\D/g, '');
-      if (!/^\d{10,15}$/.test(phoneClean)) {
-        console.error(`Número inválido para lead ${leadId}: "${telefono}"`);
-        continue;
-      }
-
-      const firstName = (requesterName || '').trim().split(' ')[0] || '';
-
-      // 3) Mensaje de cierre
-      const greeting = `Listo ${firstName}, ya terminé la letra para tu canción. *Léela y dime si te gusta.*`;
-      await sendTextMessage(phoneClean, greeting);
-      await db
-        .collection('leads').doc(leadId).collection('messages')
-        .add({ content: greeting, sender: 'business', timestamp: new Date() });
-
-      // 4) Enviar la letra
-      await sendTextMessage(phoneClean, letra);
-      await db
-        .collection('leads').doc(leadId).collection('messages')
-        .add({ content: letra, sender: 'business', timestamp: new Date() });
-
-      // 5) Enviar audio introductorio
-      await sendAudioMessage(phoneClean, AUDIO_URL);
-      await db
-        .collection('leads').doc(leadId).collection('messages')
-        .add({ mediaType: 'audio', mediaUrl: AUDIO_URL, sender: 'business', timestamp: new Date() });
-
-      // 6) Enviar el video como enlace de texto
-      await sendVideoMessage(phoneClean, VIDEO_URL);
-      await db
-        .collection('leads').doc(leadId).collection('messages')
-        .add({ mediaType: 'video', mediaUrl: VIDEO_URL, sender: 'business', timestamp: new Date() });
-
-      // 7) Mensaje promocional
-      const promo =
-        `${firstName} el costo normal es de $1997 MXN pero tenemos la promocional esta semana de $697 MXN.\n\n` +
-        `Puedes pagar en esta cuenta:\n\n🏦 Transferencia bancaria:\n` +
-        `Cuenta: 4152 3143 2669 0826\nBanco: BBVA\nTitular: Iván Martínez Jiménez\n\n` +
-        `🌐 Pago en línea o en dolares 🇺🇸 (45 USD):\n` +
-        `https://cantalab.com/tu-cancion-mx/`;
-      await sendTextMessage(phoneClean, promo);
-      await db
-        .collection('leads').doc(leadId).collection('messages')
-        .add({ content: promo, sender: 'business', timestamp: new Date() });
-
-      // 8) Actualizar lead y marcar letra enviada
-      await leadRef.update({
-        etiquetas: FieldValue.arrayUnion('LetraEnviada'),
-        secuenciasActivas: FieldValue.arrayUnion({
-          trigger: 'LetraEnviada',
-          startTime: new Date().toISOString(),
-          index: 0
-        })
-      });
-      await docSnap.ref.update({ status: 'enviada' });
-    }
-  } catch (err) {
-    console.error('❌ Error en sendLetras:', err);
-  }
-}
-
-
-async function generarLetraParaMusica() {
-  const snap = await db.collection('musica')
-    .where('status', '==', 'Sin letra')
-    .limit(1)
-    .get();
-  if (snap.empty) return;
-
-  const docSnap = snap.docs[0];
-  const d       = docSnap.data();
-  const prompt = `
-Escribe una letra de canción con lenguaje simple siguiendo esta estructura:
-verso 1, verso 2, coro, verso 3, verso 4 y coro.
-Agrega título en negritas.
-Propósito: ${d.purpose}.
-Nombre: ${d.includeName}.
-Anecdotas: ${d.anecdotes}.
-  `.trim();
-
-  const resp = await openai.createChatCompletion({
-    model: 'gpt-4o',
-    messages: [
-      { role: 'system', content: 'Eres un compositor creativo.' },
-      { role: 'user',   content: prompt }
-    ],
-    max_tokens: 400,
-  });
-  const letra = resp.data.choices?.[0]?.message?.content?.trim();
-  if (!letra) throw new Error(`No letra para ${docSnap.id}`);
-
-  await docSnap.ref.update({
-    lyrics: letra,
-    status: 'Sin prompt',
-    lyricsGeneratedAt: FieldValue.serverTimestamp()
-  });
-  console.log(`✅ generarLetraParaMusica: ${docSnap.id}`);
-}
-
-/**
- * Genera y refina automáticamente el prompt para Suno usando ChatGPT.
- * Pasa de status 'Sin prompt' → 'Sin música'.
- */
-async function generarPromptParaMusica() {
-  // 1) Recupera un documento pendiente
-  const snap = await db.collection('musica')
-    .where('status', '==', 'Sin prompt')
-    .limit(1)
-    .get();
-  if (snap.empty) return;
-
-  const docSnap = snap.docs[0];
-  const { artist, genre, voiceType } = docSnap.data();
-
-  // 2) Borrador del prompt
-  const draft = `
-  Crea un promt para decirle a suno que haga una canción estilo exitos de  ${artist} genero 
-   ${genre} con tipo de voz ${voiceType}. Sin mencionar al artista en cuestion u otras palabras
-    que puedan causar conflictos de derecho de autor, centrate en los elementos musicales como ritmo, instrumentos,
-     generos. Suno requiere que sean maximo 120 caracteres y que le pases los elementos separados por coma, 
-     mira este ejemplo ( rock pop con influencias en blues, guitarra electrica, ritmo de bateria energico)
-      genera algo similar para cancion que quiero.
-  `.trim();
-
-  // 3) Usa ChatGPT para refinar el borrador
-  const gptRes = await openai.createChatCompletion({
-    model: 'gpt-4o',
-    messages: [
-      { role: 'system', content: 'Eres un redactor creativo de prompts musicales.' },
-      { role: 'user', content: `Refina este borrador para que tenga menos de 120 caracteres y sólo liste los elementos separados por comas: "${draft}"` }
-    ]
-  });
-
-  const stylePrompt = gptRes.data.choices[0].message.content.trim();
-
-  // 4) Guarda el prompt refinado en Firestore y avanza el estado
-  await docSnap.ref.update({
-    stylePrompt,
-    status: 'Sin música'
-  });
-
-  console.log(`✅ generarPromptParaMusica: ${docSnap.id} → "${stylePrompt}"`);
-}
-
-
-
-
-
-// ————————————
-// Helpers Suno
-// ————————————
-
-/**
- * Lanza la generación de música en Suno y retorna el taskId.
- */
-/**
- * Lanza la generación de música en Suno y retorna el taskId.
- */
-async function lanzarTareaSuno({ title, stylePrompt, lyrics }) {
-  const url  = 'https://apibox.erweima.ai/api/v1/generate';
-  const body = {
-    model:        "V4",
-    customMode:   true,
-    instrumental: false,
-    title,
-    style:        stylePrompt,
-    prompt:       lyrics,
-    callbackUrl:  process.env.CALLBACK_URL  // tu endpoint /api/suno/callback
-  };
-
-  console.log('🛠️ Suno request:', { body });
-  const res = await axios.post(url, body, {
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization:  `Bearer ${process.env.SUNO_API_KEY}`
-    }
-  });
-  console.log('🛠️ Suno response:', res.status, res.data);
-
-  if (res.data.code !== 200 || !res.data.data?.taskId) {
-    throw new Error(`No taskId recibido de Suno. Respuesta: ${JSON.stringify(res.data)}`);
-  }
-  return res.data.data.taskId;
-}
-
-
-
-/**
- * Busca un documento con status 'Sin música', lanza la tarea en Suno
- * y guarda el taskId en Firestore. El webhook se encargará de actualizar
- * el audioUrl y el status cuando Suno lo notifique.
- */
-async function generarMusicaConSuno() {
-  // 1) Selecciona un documento pendiente de música
-  const snap = await db.collection('musica')
-    .where('status', '==', 'Sin música')
-    .limit(1)
-    .get();
-  if (snap.empty) return;  // no hay nada que procesar
-
-  const doc = snap.docs[0];
-  const docRef = doc.ref;
-  const { stylePrompt, purpose, lyrics } = doc.data();
-
-  // 2) Marca como “Procesando música”
-  await docRef.update({ 
-    status: 'Procesando música',
-    generatedAt: FieldValue.serverTimestamp()
-  
-  });
-
-  try {
-    // 3) Lanza la tarea y guarda el taskId
-    const taskId = await lanzarTareaSuno({
-      title: purpose.slice(0, 30),   // Suno permite hasta 30 chars
-      stylePrompt,
-      lyrics
-    });
-    await docRef.update({ taskId });
-
-    console.log(`🔔 generarMusicaConSuno: lanzado task ${taskId} para ${docRef.id}`);
-  } catch (err) {
-    console.error(`❌ Error en generarMusicaConSuno (${docRef.id}):`, err.message);
-    // Marca error para no reintentar indefinidamente
-    await docRef.update({
-      status:     'Error música',
-      errorMsg:   err.message,
-      updatedAt:  FieldValue.serverTimestamp()
-    });
-  }
-}
-
-
-
-
-
-// 4) Enviar música por WhatsApp (Enviar música → Enviada)
-async function enviarMusicaPorWhatsApp() {
-  // 1) Buscamos todos los docs listos para enviar
-  const snap = await db.collection('musica')
-    .where('status', '==', 'Enviar música')
-    .get();
-  if (snap.empty) return;
-
-  const now = Date.now();
-
-  for (const docSnap of snap.docs) {
-    const doc    = docSnap.data();
-    const ref    = docSnap.ref;
-    const leadId = doc.leadId;
-    const phone  = (doc.leadPhone || '').replace(/\D/g, '');
-    const lyrics = doc.lyrics;
-    const clip   = doc.clipUrl;
-    const created = doc.createdAt?.toDate?.().getTime() || now;
-
-    // 2) Sólo enviamos si han pasado ≥15 minutos desde createdAt
-    if (now - created < 15 * 60_000) continue;
-
-    if (!phone || !lyrics || !clip) {
-      console.warn(`❌ faltan datos en doc ${docSnap.id}`);
-      continue;
-    }
-
-    try {
-      // 3) Enviar la letra
-      await sendTextMessage(phone, `Aquí tienes la letra de tu canción:\n\n${lyrics}`);
-
-      // 4) Enviar el clip de 30s con marca de agua
-      await sendAudioMessage(phone, clip);
-
-      // 5) Actualizar estado en Firestore
-      await ref.update({
-        status: 'Enviada',
-        sentAt: FieldValue.serverTimestamp()
-      });
-
-      // 6) Añadir secuencia "CancionEnviada" al lead
-      await db.collection('leads').doc(leadId).update({
-        secuenciasActivas: FieldValue.arrayUnion({
-          trigger:   'CancionEnviada',
-          startTime: new Date().toISOString(),
-          index:     0
-        })
-      });
-
-      console.log(`✅ Letra + clip enviados al ${phone} y secuencia CancionEnviada agregada.`);
-    } catch (err) {
-      console.error(`❌ Error enviando música para doc ${docSnap.id}:`, err);
-    }
-  }
-}
-
-
-
-
-
-export {
+import express from 'express';
+import cors from 'cors';
+import bodyParser from 'body-parser';
+import dotenv from 'dotenv';
+import cron from 'node-cron';
+import multer from 'multer';
+import path from 'path';
+import fs from 'fs';
+import ffmpeg from 'fluent-ffmpeg';
+import ffmpegInstaller from '@ffmpeg-installer/ffmpeg';
+import { admin, db } from './firebaseAdmin.js';
+
+import { sendTextMessage, sendAudioMessage } from './whatsappService.js';
+import {
   processSequences,
   generateLetras,
   sendLetras,
@@ -521,4 +23,545 @@ export {
   generarPromptParaMusica,
   generarMusicaConSuno,
   enviarMusicaPorWhatsApp
-};
+} from './scheduler.js';
+
+
+
+dotenv.config();
+ffmpeg.setFfmpegPath(ffmpegInstaller.path);
+
+
+const bucket = admin.storage().bucket();
+
+const TOKEN = process.env.WHATSAPP_TOKEN;
+const PHONEID = process.env.PHONE_NUMBER_ID;
+const GRAPH_PHONE_URL = `https://graph.facebook.com/v15.0/${PHONEID}`;
+
+const app = express();
+const port = process.env.PORT || 3001;
+const upload = multer({ dest: path.resolve('./uploads') });
+const FieldValue = admin.firestore.FieldValue;
+
+// Middlewares
+app.use(express.json({ verify: (req, res, buf) => { req.rawBody = buf } }));
+app.use(cors());
+app.use(bodyParser.json());
+
+/**  
+ * Endpoint para enviar mensaje de texto  
+ */
+app.post('/api/whatsapp/send-message', async (req, res) => {
+  console.log('[DEBUG] POST /api/whatsapp/send-message', req.body);
+  const { leadId, phone, message } = req.body;
+  if (!message || (!leadId && !phone)) {
+    return res.status(400).json({ error: 'Faltan message y leadId o phone' });
+  }
+
+  try {
+    let numero = phone;
+    if (leadId) {
+      const leadSnap = await db.collection('leads').doc(leadId).get();
+      if (!leadSnap.exists) {
+        return res.status(404).json({ error: 'Lead no encontrado' });
+      }
+      numero = leadSnap.data().telefono;
+    }
+
+    await sendTextMessage(numero, message);
+    return res.json({ success: true });
+  } catch (err) {
+    console.error('Error enviando texto:', err);
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+/**  
+ * Endpoint para enviar nota de voz  
+ */
+app.post(
+  '/api/whatsapp/send-audio',
+  upload.single('audio'),
+  async (req, res) => {
+    console.log('[DEBUG] POST /api/whatsapp/send-audio', req.body);
+    const { phone } = req.body;
+    const uploadPath = req.file.path;
+    const m4aPath = `${uploadPath}.m4a`;
+
+    try {
+      // 1) Transcodifica a M4A (AAC)
+      await new Promise((resolve, reject) => {
+        ffmpeg(uploadPath)
+          .outputOptions(['-c:a aac', '-vn'])
+          .toFormat('mp4')
+          .save(m4aPath)
+          .on('end', resolve)
+          .on('error', reject);
+      });
+
+      // 2) Envía la nota de voz
+      await sendAudioMessage(phone, m4aPath);
+
+      // 3) Limpia archivos
+      fs.unlinkSync(uploadPath);
+      fs.unlinkSync(m4aPath);
+
+      return res.json({ success: true });
+    } catch (err) {
+      console.error('Error enviando audio:', err);
+      try { fs.unlinkSync(uploadPath); } catch {}
+      try { fs.unlinkSync(m4aPath); } catch {}
+      return res.status(500).json({ error: err.message });
+    }
+  }
+);
+
+
+app.post('/api/suno/callback', express.json(), async (req, res) => {
+  const raw = req.body;
+  console.log('🔔 Callback de Suno raw:', JSON.stringify(raw, null, 2));
+
+  // 1) Extraer taskId
+  const taskId = raw.taskId || raw.data?.taskId || raw.data?.task_id;
+  if (!taskId) {
+    console.warn('⚠️ Callback sin taskId:', raw);
+    return res.sendStatus(400);
+  }
+
+  // 2) Extraer URL privada de audio (esperar solo 'complete')
+  let audioUrlPrivada = null;
+  if (Array.isArray(raw.data?.data)) {
+    const done = raw.data.data.find(item =>
+      (item.audio_url || item.source_audio_url)?.trim()
+    );
+    if (done) {
+      audioUrlPrivada = done.audio_url || done.source_audio_url;
+    }
+  }
+  if (!audioUrlPrivada) {
+    console.log(`⚠️ Callback intermedio (no audio) para task ${taskId}`);
+    return res.sendStatus(200);
+  }
+
+  // 3) Localizar doc en Firestore
+  const snap = await db.collection('musica')
+    .where('taskId', '==', taskId)
+    .limit(1)
+    .get();
+  if (snap.empty) {
+    console.warn('⚠️ Callback Suno sin task encontrado:', taskId);
+    return res.sendStatus(404);
+  }
+  const docRef = snap.docs[0].ref;
+
+  try {
+    // Paths temporales
+    const tmpFull = path.resolve('/tmp', `${taskId}.mp3`);
+    const tmpClip = path.resolve('/tmp', `${taskId}-clip.mp3`);
+    const tmpWater = path.resolve('/tmp', `${taskId}-watermarked.mp3`);
+    // URL de marca de agua
+    const watermarkUrl = 'https://cantalab.com/wp-content/uploads/2025/05/audioMarcaCantalab.mp3';
+
+    // 4) Descargar MP3 completo
+    const fullRes = await axios.get(audioUrlPrivada, { responseType: 'stream' });
+    await new Promise((resolve, reject) => {
+      const ws = fs.createWriteStream(tmpFull);
+      fullRes.data.pipe(ws);
+      ws.on('finish', resolve);
+      ws.on('error', reject);
+    });
+
+    // 5) Subir MP3 completo a Firebase
+    const destFull = `musica/full/${taskId}.mp3`;
+    await bucket.upload(tmpFull, {
+      destination: destFull,
+      metadata: { contentType: 'audio/mpeg' }
+    });
+    const [fullUrl] = await bucket.file(destFull)
+      .getSignedUrl({ action: 'read', expires: Date.now() + 24*60*60*1000 });
+
+    // 6) Crear clip de 30 s
+    await new Promise((resolve, reject) => {
+      ffmpeg(tmpFull)
+        .setStartTime(0)
+        .setDuration(35)
+        .output(tmpClip)
+        .on('end', resolve)
+        .on('error', reject)
+        .run();
+    });
+
+    // 7) Descargar marca de agua local
+    const watermarkTmp = path.resolve('/tmp', 'marca.wav');
+    const wmRes = await axios.get(watermarkUrl, { responseType: 'stream' });
+    await new Promise((resolve, reject) => {
+      const ws = fs.createWriteStream(watermarkTmp);
+      wmRes.data.pipe(ws);
+      ws.on('finish', resolve);
+      ws.on('error', reject);
+    });
+
+    // 8) Superponer marca a 1 s de clip
+    await new Promise((resolve, reject) => {
+      ffmpeg()
+        .input(tmpClip)
+        .input(watermarkTmp)
+        .complexFilter([
+          '[1]adelay=1000|1000[beep];[0][beep]amix=inputs=2:duration=first'
+        ])
+        .outputOptions('-ac 2')
+        .output(tmpWater)
+        .on('end', resolve)
+        .on('error', reject)
+        .run();
+    });
+
+    // 9) Subir clip marcado a Firebase
+    const destClip = `musica/clip/${taskId}-clip.mp3`;
+    await bucket.upload(tmpWater, {
+      destination: destClip,
+      metadata: { contentType: 'audio/mpeg' }
+    });
+    const [clipUrl] = await bucket.file(destClip)
+      .getSignedUrl({ action: 'read', expires: Date.now() + 24*60*60*1000 });
+
+    // 10) Actualizar Firestore
+    await docRef.update({
+      fullUrl,
+      clipUrl,
+      status: 'Enviar música'
+    });
+    console.log(`✅ Música almacenada y clip listo: ${clipUrl}`);
+
+    // 11) Limpiar archivos temporales
+    [tmpFull, tmpClip, tmpWater, watermarkTmp].forEach(f => {
+      try { fs.unlinkSync(f); } catch {}
+    });
+
+    return res.sendStatus(200);
+  } catch (err) {
+    console.error('❌ Error en callback Suno:', err);
+    await docRef.update({ status: 'Error música', errorMsg: err.message });
+    return res.sendStatus(500);
+  }
+});
+
+
+
+// NUEVA ruta para los audios del chat
+app.post(
+  '/api/whatsapp/send-chat-audio',
+  upload.single('audio'),
+  async (req, res) => {
+    try {
+      const { phone }   = req.body;
+      const uploadPath  = req.file.path;
+      const m4aPath     = `${uploadPath}.m4a`;
+
+      // 1) Transcodifica a M4A
+      await new Promise((resolve, reject) => {
+        ffmpeg(uploadPath)
+          .outputOptions(['-c:a aac', '-vn'])
+          .toFormat('mp4')
+          .save(m4aPath)
+          .on('end', resolve)
+          .on('error', reject);
+      });
+
+      // 2) Súbelo a Firebase Storage
+      const dest = `chat-audios/${path.basename(m4aPath)}`;
+      await bucket.upload(m4aPath, {
+        destination: dest,
+        metadata: { contentType: 'audio/mp4' }
+      });
+      const [url] = await bucket
+        .file(dest)
+        .getSignedUrl({ action: 'read', expires: Date.now() + 86400000 });
+
+      // 3) Envía al usuario con link
+      await sendAudioMessage(phone, url);
+
+      // 4) Limpia archivos temporales
+      fs.unlinkSync(uploadPath);
+      fs.unlinkSync(m4aPath);
+
+      return res.json({ success: true });
+    } catch (err) {
+      console.error('Error en send-chat-audio:', err);
+      // limpia temporales aunque falle
+      try { fs.unlinkSync(req.file.path) } catch {}
+      try { fs.unlinkSync(m4aPath) } catch {}
+      return res.status(500).json({ error: err.message });
+    }
+  }
+);
+
+/**  
+ * Webhook de WhatsApp: Verificación  
+ */
+app.get('/webhook', (req, res) => {
+  console.log('[DEBUG] GET /webhook verify');
+  const mode = req.query['hub.mode'];
+  const token = req.query['hub.verify_token'];
+  const challenge = req.query['hub.challenge'];
+  if (mode === 'subscribe' && token === process.env.WHATSAPP_VERIFY_TOKEN) {
+    return res.send(challenge);
+  }
+  return res.sendStatus(403);
+});
+
+
+
+/**
+ * Estado de conexión (simple)
+ */
+app.get('/api/whatsapp/status', async (req, res) => {
+  console.log('[DEBUG] GET /api/whatsapp/status');
+  try {
+    // Hacemos un request simple para validar token y número
+    const resp = await axios.get(GRAPH_PHONE_URL, {
+      params: {
+        access_token: TOKEN,
+        fields: 'display_phone_number'
+      }
+    });
+    // Si llegamos aquí, todo está OK
+    return res.json({
+      status: 'Conectado',
+      phone: resp.data.display_phone_number
+    });
+  } catch (err) {
+    console.error('[ERROR] status check failed:', err.response?.data || err.message);
+    // 401, 400, 404, etc.
+    const code = err.response?.status || 500;
+    return res.status(code).json({
+      status: 'Desconectado',
+      error: err.response?.data?.error?.message || err.message
+    });
+  }
+});
+
+
+/**
+ * Número activo
+ */
+app.get('/api/whatsapp/number', async (req, res) => {
+  console.log('[DEBUG] GET /api/whatsapp/number');
+  try {
+    const resp = await axios.get(GRAPH_PHONE_URL, {
+      params: { access_token: TOKEN, fields: 'display_phone_number' }
+    });
+    return res.json({ phone: resp.data.display_phone_number });
+  } catch (err) {
+    console.error('[ERROR] number fetch failed:', err.response?.data || err.message);
+    return res.status(500).json({ error: err.response?.data?.error?.message || err.message });
+  }
+});
+
+/**  
+ * Webhook de WhatsApp: Mensajes entrantes  
+ */
+
+app.post('/webhook', async (req, res) => {
+  console.log('[DEBUG] POST /webhook payload:', JSON.stringify(req.body).slice(0,200));
+  try {
+    const entryChanges = req.body.entry?.flatMap(e => e.changes) || [];
+    for (const change of entryChanges) {
+      const messages = change.value?.messages || [];
+      for (const msg of messages) {
+        const from = msg.from;                  // e.g. "521234567890"
+        const text = msg.text?.body || '';
+
+        // ——— BLOQUE UNIFICADO: baja de WhatsApp → sube a Storage → mediaUrl final ———
+let mediaType = null;
+let mediaUrl  = null;
+
+if (msg.image || msg.document || msg.audio) {
+  // 1) Tipo de media
+  if (msg.image)       mediaType = 'image';
+  else if (msg.document) mediaType = 'pdf';
+  else if (msg.audio)    mediaType = 'audio';
+
+  const mediaId = msg.image?.id || msg.document?.id || msg.audio?.id;
+  if (mediaId) {
+    // 2) Pido URL temporal de Graph
+    const { data: { url: whatsappUrl } } = await axios.get(
+      `https://graph.facebook.com/v15.0/${mediaId}`,
+      { params: { access_token: TOKEN, fields: 'url' } }
+    );
+
+    // 3) Descargo el binario
+    const ext = mediaType === 'image' ? 'jpg'
+              : mediaType === 'pdf'   ? 'pdf'
+              : 'mp4';
+    const tmpPath = path.resolve('./uploads', `${mediaId}.${ext}`);
+    const writer = fs.createWriteStream(tmpPath);
+    const response = await axios.get(whatsappUrl, {
+      responseType: 'stream',
+      headers: { Authorization: `Bearer ${TOKEN}` }
+    });
+    await new Promise((res, rej) => {
+      response.data.pipe(writer);
+      writer.on('finish', res);
+      writer.on('error', rej);
+    });
+
+    // 4) Subo a Firebase Storage
+    const dest = `chat-media/${mediaId}.${ext}`;
+    await bucket.upload(tmpPath, {
+      destination: dest,
+      metadata: { contentType: response.headers['content-type'] }
+    });
+    // limpio tmp
+    fs.unlinkSync(tmpPath);
+
+    // 5) Genero signed URL
+    const [signedUrl] = await bucket
+      .file(dest)
+      .getSignedUrl({ action: 'read', expires: Date.now() + 24*60*60*1000 });
+
+    mediaUrl = signedUrl;
+  }
+} else {
+  mediaType = text ? 'text' : null;
+}
+// ——————————————————————————————————————————————————————————
+
+        // ——————————————————————————————————————————————————————————
+
+        // 1) Upsert de lead
+        const q = await db.collection('leads')
+                          .where('telefono','==', from)
+                          .limit(1)
+                          .get();
+        let leadId;
+        if (q.empty) {
+          const now     = new Date();
+          const cfgSnap = await db.collection('config').doc('appConfig').get();
+          const cfg     = cfgSnap.exists ? cfgSnap.data() : {};
+          const trigger = cfg.defaultTrigger || 'NuevoLead';
+
+          const newLead = await db.collection('leads').add({
+            telefono: from,
+            nombre:  msg.pushName || '',
+            source:  'WhatsApp',
+            fecha_creacion: now,
+            estado:  'nuevo',
+            etiquetas: [trigger],
+            secuenciasActivas: [{ trigger, startTime: now.toISOString(), index: 0 }],
+            unreadCount: 1,
+            lastMessageAt: now
+          });
+          leadId = newLead.id;
+        } else {
+          leadId = q.docs[0].id;
+          await db.collection('leads').doc(leadId).update({
+            unreadCount: FieldValue.increment(1),
+            lastMessageAt: new Date()
+          });
+        }
+
+        // 2) Guardar mensaje en subcolección
+        const msgData = {
+          content:   text,
+          mediaType,
+          mediaUrl,
+          sender:    'lead',
+          timestamp: new Date()
+        };
+        await db.collection('leads')
+                .doc(leadId)
+                .collection('messages')
+                .add(msgData);
+      }
+    }
+
+    // Siempre responder 200 lo antes posible
+    return res.sendStatus(200);
+  } catch (err) {
+    console.error('[ERROR] en webhook:', err);
+    return res.sendStatus(500);
+  }
+});
+
+/**
+ * Proxy para media: descarga desde WhatsApp o Firebase y reenvía al cliente
+ */
+app.get('/api/media', async (req, res) => {
+  const { url } = req.query;
+  if (!url) return res.status(400).send('Missing url');
+
+  try {
+    // baja el stream original (incluye token en url si viene)
+    const response = await axios.get(url, {
+      responseType: 'stream',
+      // si tu URL requiere Authorization en header en lugar de query:
+      // headers: { Authorization: `Bearer ${TOKEN}` }
+    });
+
+    // reenvía content-type al cliente
+    res.setHeader('Content-Type', response.headers['content-type']);
+    response.data.pipe(res);
+  } catch (err) {
+    console.error('Error proxy /api/media:', err.message);
+    res.sendStatus(500);
+  }
+});
+
+
+// Scheduler: tus procesos periódicos
+cron.schedule('* * * * *', () => {
+  processSequences().catch(err => console.error('Error en processSequences:', err));
+});
+cron.schedule('* * * * *', () => {
+  generateLetras().catch(err => console.error('Error en generateLetras:', err));
+});
+cron.schedule('* * * * *', () => {
+  sendLetras().catch(err => console.error('Error en sendLetras:', err));
+});
+
+// NUEVOS cron jobs para música
+cron.schedule('* * * * *', () => {
+  generarLetraParaMusica().catch(err => console.error('Error en generarLetraParaMusica:', err));
+});
+cron.schedule('* * * * *', () => {
+  generarPromptParaMusica().catch(err => console.error('Error en generarPromptParaMusica:', err));
+});
+
+cron.schedule('* * * * *', () => {
+  generarMusicaConSuno().catch(console.error);
+});
+
+cron.schedule('* * * * *', () => {
+  enviarMusicaPorWhatsApp().catch(err => console.error('Error en enviarMusicaPorWhatsApp:', err));
+});
+
+// Debe ir antes de app.listen(...)
+app.get('/api/media', async (req, res) => {
+  const { url } = req.query;
+  if (!url) {
+    return res.status(400).send('url missing');
+  }
+  try {
+    // hacemos fetch del stream
+    const resp = await axios.get(url, {
+      responseType: 'stream',
+      // si haces WA attachments, necesitas token:
+      params: resp => resp.url.includes('lookaside.fbsbx.com')
+        ? { access_token: TOKEN }
+        : {},
+    });
+    // cabeceras CORS y de tipo
+    res.set('Access-Control-Allow-Origin', '*');
+    res.set('Content-Type', resp.headers['content-type']);
+    // redirigimos el stream al cliente
+    resp.data.pipe(res);
+  } catch (err) {
+    console.error('Media proxy error:', err.message);
+    res.sendStatus(500);
+  }
+});
+
+// Arranca el servidor
+app.listen(port, () => {
+  console.log(`Servidor corriendo en puerto ${port}`);
+});
