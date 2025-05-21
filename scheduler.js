@@ -1,9 +1,13 @@
 // src/server/scheduler.js
 import { db } from './firebaseAdmin.js';
 import { sendTextMessage, sendAudioMessage, sendVideoMessage} from './whatsappService.js';
-
 import admin from 'firebase-admin';
 import { Configuration, OpenAIApi } from 'openai';
+import fetch from 'node-fetch';
+import axios from 'axios';
+const bucket = admin.storage().bucket();
+
+
 
 const { FieldValue } = admin.firestore;
 
@@ -274,8 +278,247 @@ async function sendLetras() {
   }
 }
 
+
+async function generarLetraParaMusica() {
+  const snap = await db.collection('musica')
+    .where('status', '==', 'Sin letra')
+    .limit(1)
+    .get();
+  if (snap.empty) return;
+
+  const docSnap = snap.docs[0];
+  const d       = docSnap.data();
+  const prompt = `
+Escribe una letra de canción con lenguaje simple siguiendo esta estructura:
+verso 1, verso 2, coro, verso 3, verso 4 y coro.
+Agrega título en negritas.
+Propósito: ${d.purpose}.
+Nombre: ${d.includeName}.
+Anecdotas: ${d.anecdotes}.
+  `.trim();
+
+  const resp = await openai.createChatCompletion({
+    model: 'gpt-4o',
+    messages: [
+      { role: 'system', content: 'Eres un compositor creativo.' },
+      { role: 'user',   content: prompt }
+    ],
+    max_tokens: 400,
+  });
+  const letra = resp.data.choices?.[0]?.message?.content?.trim();
+  if (!letra) throw new Error(`No letra para ${docSnap.id}`);
+
+  await docSnap.ref.update({
+    lyrics: letra,
+    status: 'Sin prompt',
+    lyricsGeneratedAt: FieldValue.serverTimestamp()
+  });
+  console.log(`✅ generarLetraParaMusica: ${docSnap.id}`);
+}
+
+/**
+ * Genera y refina automáticamente el prompt para Suno usando ChatGPT.
+ * Pasa de status 'Sin prompt' → 'Sin música'.
+ */
+async function generarPromptParaMusica() {
+  // 1) Recupera un documento pendiente
+  const snap = await db.collection('musica')
+    .where('status', '==', 'Sin prompt')
+    .limit(1)
+    .get();
+  if (snap.empty) return;
+
+  const docSnap = snap.docs[0];
+  const { artist, genre, voiceType } = docSnap.data();
+
+  // 2) Borrador del prompt
+  const draft = `
+  Crea un promt para decirle a suno que haga una canción estilo exitos de  ${artist} genero 
+   ${genre} con tipo de voz ${voiceType}. Sin mencionar al artista en cuestion u otras palabras
+    que puedan causar conflictos de derecho de autor, centrate en los elementos musicales como ritmo, instrumentos,
+     generos. Suno requiere que sean maximo 120 caracteres y que le pases los elementos separados por coma, 
+     mira este ejemplo ( rock pop con influencias en blues, guitarra electrica, ritmo de bateria energico)
+      genera algo similar para cancion que quiero.
+  `.trim();
+
+  // 3) Usa ChatGPT para refinar el borrador
+  const gptRes = await openai.createChatCompletion({
+    model: 'gpt-4o',
+    messages: [
+      { role: 'system', content: 'Eres un redactor creativo de prompts musicales.' },
+      { role: 'user', content: `Refina este borrador para que tenga menos de 120 caracteres y sólo liste los elementos separados por comas: "${draft}"` }
+    ]
+  });
+
+  const stylePrompt = gptRes.data.choices[0].message.content.trim();
+
+  // 4) Guarda el prompt refinado en Firestore y avanza el estado
+  await docSnap.ref.update({
+    stylePrompt,
+    status: 'Sin música'
+  });
+
+  console.log(`✅ generarPromptParaMusica: ${docSnap.id} → "${stylePrompt}"`);
+}
+
+
+
+
+
+// ————————————
+// Helpers Suno
+// ————————————
+
+/**
+ * Lanza la generación de música en Suno y retorna el taskId.
+ */
+/**
+ * Lanza la generación de música en Suno y retorna el taskId.
+ */
+async function lanzarTareaSuno({ title, stylePrompt, lyrics }) {
+  const url  = 'https://apibox.erweima.ai/api/v1/generate';
+  const body = {
+    model:        "V4",
+    customMode:   true,
+    instrumental: false,
+    title,
+    style:        stylePrompt,
+    prompt:       lyrics,
+    callbackUrl:  process.env.CALLBACK_URL  // tu endpoint /api/suno/callback
+  };
+
+  console.log('🛠️ Suno request:', { body });
+  const res = await axios.post(url, body, {
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization:  `Bearer ${process.env.SUNO_API_KEY}`
+    }
+  });
+  console.log('🛠️ Suno response:', res.status, res.data);
+
+  if (res.data.code !== 200 || !res.data.data?.taskId) {
+    throw new Error(`No taskId recibido de Suno. Respuesta: ${JSON.stringify(res.data)}`);
+  }
+  return res.data.data.taskId;
+}
+
+
+
+/**
+ * Busca un documento con status 'Sin música', lanza la tarea en Suno
+ * y guarda el taskId en Firestore. El webhook se encargará de actualizar
+ * el audioUrl y el status cuando Suno lo notifique.
+ */
+async function generarMusicaConSuno() {
+  // 1) Selecciona un documento pendiente de música
+  const snap = await db.collection('musica')
+    .where('status', '==', 'Sin música')
+    .limit(1)
+    .get();
+  if (snap.empty) return;  // no hay nada que procesar
+
+  const doc = snap.docs[0];
+  const docRef = doc.ref;
+  const { stylePrompt, purpose, lyrics } = doc.data();
+
+  // 2) Marca como “Procesando música”
+  await docRef.update({ 
+    status: 'Procesando música',
+    generatedAt: FieldValue.serverTimestamp()
+  
+  });
+
+  try {
+    // 3) Lanza la tarea y guarda el taskId
+    const taskId = await lanzarTareaSuno({
+      title: purpose.slice(0, 30),   // Suno permite hasta 30 chars
+      stylePrompt,
+      lyrics
+    });
+    await docRef.update({ taskId });
+
+    console.log(`🔔 generarMusicaConSuno: lanzado task ${taskId} para ${docRef.id}`);
+  } catch (err) {
+    console.error(`❌ Error en generarMusicaConSuno (${docRef.id}):`, err.message);
+    // Marca error para no reintentar indefinidamente
+    await docRef.update({
+      status:     'Error música',
+      errorMsg:   err.message,
+      updatedAt:  FieldValue.serverTimestamp()
+    });
+  }
+}
+
+
+
+
+
+// 4) Enviar música por WhatsApp (Enviar música → Enviada)
+async function enviarMusicaPorWhatsApp() {
+  // 1) Buscamos todos los docs listos para enviar
+  const snap = await db.collection('musica')
+    .where('status', '==', 'Enviar música')
+    .get();
+  if (snap.empty) return;
+
+  const now = Date.now();
+
+  for (const docSnap of snap.docs) {
+    const doc    = docSnap.data();
+    const ref    = docSnap.ref;
+    const leadId = doc.leadId;
+    const phone  = (doc.leadPhone || '').replace(/\D/g, '');
+    const lyrics = doc.lyrics;
+    const clip   = doc.clipUrl;
+    const created = doc.createdAt?.toDate?.().getTime() || now;
+
+    // 2) Sólo enviamos si han pasado ≥15 minutos desde createdAt
+    if (now - created < 15 * 60_000) continue;
+
+    if (!phone || !lyrics || !clip) {
+      console.warn(`❌ faltan datos en doc ${docSnap.id}`);
+      continue;
+    }
+
+    try {
+      // 3) Enviar la letra
+      await sendTextMessage(phone, `Aquí tienes la letra de tu canción:\n\n${lyrics}`);
+
+      // 4) Enviar el clip de 30s con marca de agua
+      await sendAudioMessage(phone, clip);
+
+      // 5) Actualizar estado en Firestore
+      await ref.update({
+        status: 'Enviada',
+        sentAt: FieldValue.serverTimestamp()
+      });
+
+      // 6) Añadir secuencia "CancionEnviada" al lead
+      await db.collection('leads').doc(leadId).update({
+        secuenciasActivas: FieldValue.arrayUnion({
+          trigger:   'CancionEnviada',
+          startTime: new Date().toISOString(),
+          index:     0
+        })
+      });
+
+      console.log(`✅ Letra + clip enviados al ${phone} y secuencia CancionEnviada agregada.`);
+    } catch (err) {
+      console.error(`❌ Error enviando música para doc ${docSnap.id}:`, err);
+    }
+  }
+}
+
+
+
+
+
 export {
   processSequences,
   generateLetras,
-  sendLetras
+  sendLetras,
+  generarLetraParaMusica,
+  generarPromptParaMusica,
+  generarMusicaConSuno,
+  enviarMusicaPorWhatsApp
 };
