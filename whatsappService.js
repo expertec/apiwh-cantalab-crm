@@ -12,14 +12,7 @@ const WABA_BUSINESS_ACCOUNT_ID = process.env.WABA_BUSINESS_ACCOUNT_ID;
 const TOKEN   = process.env.WHATSAPP_TOKEN;
 const PHONEID = process.env.PHONE_NUMBER_ID;
 // Base URL para todas las llamadas (sin “/messages”)
-
-
-
-// Para enviar mensajes (usa el phone_number_id)
-const PHONE_API_BASE = `${process.env.WABA_API_URL}/${process.env.PHONE_NUMBER_ID}`;
-
-// Para gestión de plantillas (usa el business_account_id)
-const WABA_API_BASE  = `${process.env.WABA_API_URL}/${process.env.WABA_BUSINESS_ACCOUNT_ID}`;
+const API_BASE = `https://graph.facebook.com/v15.0/${PHONEID}`;
 
 /** Normaliza teléfono a E.164 sin '+' */
 function normalize(phone) {
@@ -30,8 +23,7 @@ function normalize(phone) {
 
 /** Llama a la WhatsApp Cloud API */
 async function callWhatsAppAPI(path, body, config = {}) {
-
-  const url = PHONE_API_BASE + path;
+  const url = API_BASE + path;
   console.log(`[WA API] POST ${path}:`, body);
 
   const axiosConfig = {
@@ -152,31 +144,37 @@ export async function sendVideoMessage(phone, media) {
  * Obtiene las plantillas registradas en tu WhatsApp Business Account
  */
 
+
   export async function listTemplates() {
-    if (!WABA_API_BASE || !TOKEN) {
-      throw new Error('Revisa WABA_API_BASE y WHATSAPP_TOKEN en tu .env');
+    const baseUrl       = process.env.WABA_API_URL;      // ej. https://graph.facebook.com/v15.0
+    const phoneNumberId = process.env.PHONE_NUMBER_ID;   // tu Phone Number ID
+    const token         = process.env.WHATSAPP_TOKEN;
+    if (!baseUrl || !phoneNumberId || !token) {
+      throw new Error('Faltan WABA_API_URL, PHONE_NUMBER_ID o WHATSAPP_TOKEN en tu .env');
     }
   
-    const url = `${WABA_API_BASE}/message_templates`;
-    let all = [], after = null;
+    const url = `${baseUrl}/${phoneNumberId}/message_templates`;
+    let allTemplates = [];
+    let after = null;
   
     do {
-      const res = await axios.get(url, {
-        params: {
-          access_token: TOKEN,
-          status: 'APPROVED',
-          fields: 'name,language,components',
-          limit: 50,
-          ...(after && { after })
-        }
-      });
+      const params = {
+        access_token: token,
+        status:       'APPROVED',
+        fields:       'name,language,components',
+        limit:        50,
+        ...(after     && { after }),
+        language:     'es_MX',     // < — filtrado correcto por idioma
+      };
+  
+      const res = await axios.get(url, { params });
       console.log('📋 RAW TEMPLATES RESPONSE:', res.data);
-      all = all.concat(res.data.data || []);
+      allTemplates = allTemplates.concat(res.data.data || []);
       after = res.data.paging?.cursors?.after;
     } while (after);
   
-    return all;
+    return allTemplates;
   }
-  
+
 
   

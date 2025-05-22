@@ -35,7 +35,7 @@ const bucket = admin.storage().bucket();
 
 const TOKEN = process.env.WHATSAPP_TOKEN;
 const PHONEID = process.env.PHONE_NUMBER_ID;
-const GRAPH_PHONE_URL = `https://graph.facebook.com/v22.0/${PHONEID}`;
+const GRAPH_PHONE_URL = `https://graph.facebook.com/v15.0/${PHONEID}`;
 
 const app = express();
 const port = process.env.PORT || 3001;
@@ -295,15 +295,17 @@ app.post(
   }
 );
 
-app.get('/api/whatsapp/templates', async (req, res) => {
+// Listar plantillas de WhatsApp
+app.get('/api/templates', async (req, res) => {
   try {
     const templates = await listTemplates();
     res.json(templates);
   } catch (e) {
-    console.error('Error listando plantillas:', e);
-    res.status(500).send({ error: e.message });
+    console.error('Error listando plantillas', e);
+    res.status(500).json({ error: e.message });
   }
 });
+
 
 
 /**  
