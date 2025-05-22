@@ -140,16 +140,20 @@ export async function sendVideoMessage(phone, media) {
     }
   }
 
-  export async function listTemplates() {
-    const url = `${WABA_API_URL}/${WABA_BUSINESS_ACCOUNT_ID}/message_templates`;
-    const res = await axios.get(url, {
-      params: {
-        fields:    "name,language,components",
-        status:    "APPROVED",
-        limit:     100
-      },
-      headers: { Authorization: `Bearer ${TOKEN}` }
-    });
-    return res.data.data;
-  }
+  /**
+ * Obtiene las plantillas registradas en tu WhatsApp Business Account
+ */
+export async function listTemplates() {
+  const url = `${WABA_API_URL}/${WABA_BUSINESS_ACCOUNT_ID}/message_templates`;
+  const res = await axios.get(url, {
+    params: {
+      access_token: TOKEN,                 // Token de acceso de WhatsApp Cloud API
+      fields:       "name,language,components",
+      // status:     "APPROVED",            // <-- Descomenta si solo quieres plantillas aprobadas
+      limit:        100
+    }
+  });
+  return res.data.data;    // Array de objetos { name, language: { code }, components }
+}
+
   
