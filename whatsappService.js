@@ -145,16 +145,17 @@ export async function sendVideoMessage(phone, media) {
  */
 
   export async function listTemplates() {
-   const baseUrl         = process.env.WABA_API_URL;             // ej. https://graph.facebook.com/v15.0
-   const businessAccount = process.env.WABA_BUSINESS_ACCOUNT_ID; // tu WhatsApp Business Account ID    
-   const token         = process.env.WHATSAPP_TOKEN;    // tu access token
+    const baseUrl           = process.env.WABA_API_URL;              // e.g. https://graph.facebook.com/v22.0
+    const businessAccountId = process.env.WABA_BUSINESS_ACCOUNT_ID; // tu WhatsApp Business Account ID
+    const token             = process.env.WHATSAPP_TOKEN;
   
-    if (!baseUrl || !phoneNumberId || !token) {
-      throw new Error('Faltan WABA_API_URL, PHONE_NUMBER_ID o WHATSAPP_TOKEN en tu .env');
+    if (!baseUrl || !businessAccountId || !token) {
+      throw new Error('Faltan WABA_API_URL, WABA_BUSINESS_ACCOUNT_ID o WHATSAPP_TOKEN en tu .env');
     }
   
-    
-    const url = `${baseUrl}/${businessAccount}/message_templates`;
+    // 👉 Apunta al nodo business_account, no al número de teléfono
+    const url = `${baseUrl}/${businessAccountId}/message_templates`;
+  
     let allTemplates = [];
     let after = null;
   
@@ -164,7 +165,7 @@ export async function sendVideoMessage(phone, media) {
         status:       'APPROVED',
         fields:       'name,language,components',
         limit:        50,
-        ...(after && { after })
+        ...(after && { after }),
       };
   
       const res = await axios.get(url, { params });
