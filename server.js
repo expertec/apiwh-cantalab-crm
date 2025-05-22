@@ -14,8 +14,8 @@ import ffmpeg from 'fluent-ffmpeg';
 import ffmpegInstaller from '@ffmpeg-installer/ffmpeg';
 import { admin, db } from './firebaseAdmin.js';
 
-import { sendTextMessage, sendAudioMessage } from './whatsappService.js';
-import { listTemplates } from './whatsappService.js';
+import { sendTextMessage, sendAudioMessage, listTemplates } from './whatsappService.js';
+
 import {
   processSequences,
   generateLetras,
@@ -295,6 +295,7 @@ app.post(
   }
 );
 
+// Listar plantillas de WhatsApp
 app.get('/api/templates', async (req, res) => {
   try {
     const templates = await listTemplates();
@@ -304,6 +305,7 @@ app.get('/api/templates', async (req, res) => {
     res.status(500).json({ error: e.message });
   }
 });
+
 
 
 /**  

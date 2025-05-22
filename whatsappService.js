@@ -6,6 +6,9 @@ import { db } from './firebaseAdmin.js';
 
 dotenv.config();
 
+// Variables para plantillas
+const WABA_API_URL             = process.env.WABA_API_URL            || 'https://graph.facebook.com/v15.0';
+const WABA_BUSINESS_ACCOUNT_ID = process.env.WABA_BUSINESS_ACCOUNT_ID;
 const TOKEN   = process.env.WHATSAPP_TOKEN;
 const PHONEID = process.env.PHONE_NUMBER_ID;
 // Base URL para todas las llamadas (sin “/messages”)
@@ -137,16 +140,16 @@ export async function sendVideoMessage(phone, media) {
     }
   }
 
-// al final de whatsappService.js
-export async function listTemplates() {
-  const url = `${WABA_API_URL}/${WABA_BUSINESS_ACCOUNT_ID}/message_templates`;
-  const res = await axios.get(url, {
-    params: {
-      fields: "name,language,components",
-      status: "APPROVED",
-      limit: 100
-    },
-    headers: { Authorization: `Bearer ${WABA_TOKEN}` }
-  });
-  return res.data.data;
-}
+  export async function listTemplates() {
+    const url = `${WABA_API_URL}/${WABA_BUSINESS_ACCOUNT_ID}/message_templates`;
+    const res = await axios.get(url, {
+      params: {
+        fields:    "name,language,components",
+        status:    "APPROVED",
+        limit:     100
+      },
+      headers: { Authorization: `Bearer ${TOKEN}` }
+    });
+    return res.data.data;
+  }
+  
