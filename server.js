@@ -25,6 +25,9 @@ import {
   enviarMusicaPorWhatsApp
 } from './scheduler.js';
 
+let cachedStatus = null;
+let statusCacheTs = 0;
+const STATUS_CACHE_TTL = 5 * 60 * 1000; // 5 minutos
 
 
 dotenv.config();
@@ -310,42 +313,97 @@ app.get('/webhook', (req, res) => {
 });
 
 
-
-/**
- * Estado de conexión (simple)
+/**  
+ * Estado de conexión (simple) con caché  
  */
 app.get('/api/whatsapp/status', async (req, res) => {
   console.log('[DEBUG] GET /api/whatsapp/status');
+  // Si la caché aún es válida, la devolvemos inmediatamente
+  if (cachedStatus && Date.now() - statusCacheTs < STATUS_CACHE_TTL) {
+    return res.json(cachedStatus);
+  }
+
   try {
-    // Hacemos un request simple para validar token y número
     const resp = await axios.get(GRAPH_PHONE_URL, {
-      params: {
-        access_token: TOKEN,
-        fields: 'display_phone_number'
-      }
+      params: { access_token: TOKEN, fields: 'display_phone_number' }
     });
-    // Si llegamos aquí, todo está OK
-    return res.json({
+    // Actualizamos caché
+    cachedStatus = {
       status: 'Conectado',
-      phone: resp.data.display_phone_number
-    });
+      phone:  resp.data.display_phone_number
+    };
+    statusCacheTs = Date.now();
+    return res.json(cachedStatus);
   } catch (err) {
     console.error('[ERROR] status check failed:', err.response?.data || err.message);
-    // 401, 400, 404, etc.
-    const code = err.response?.status || 500;
-    return res.status(code).json({
-      status: 'Desconectado',
-      error: err.response?.data?.error?.message || err.message
+    return res
+      .status(err.response?.status || 500)
+      .json({
+        status: 'Desconectado',
+        error:  err.response?.data?.error?.message || err.message
+      });
+  }
+});
+
+/**
+ * Número activo (reutiliza el mismo caché de /status)
+ */
+app.get('/api/whatsapp/number', async (req, res) => {
+  console.log('[DEBUG] GET /api/whatsapp/number');
+  // Si el estado está en caché y sigue vigente, devolvemos el phone
+  if (cachedStatus && Date.now() - statusCacheTs < STATUS_CACHE_TTL) {
+    return res.json({ phone: cachedStatus.phone });
+  }
+
+  // Si no hay caché (o expiró), hacemos un fetch puntual
+  try {
+    const resp = await axios.get(GRAPH_PHONE_URL, {
+      params: { access_token: TOKEN, fields: 'display_phone_number' }
     });
+    // (Opcional) podrías también refrescar cachedStatus aquí
+    return res.json({ phone: resp.data.display_phone_number });
+  } catch (err) {
+    console.error('[ERROR] number fetch failed:', err.response?.data || err.message);
+    return res
+      .status(err.response?.status || 500)
+      .json({ error: err.response?.data?.error?.message || err.message });
   }
 });
 
 
+// tras tus imports, middlewares y rutas de envío de mensaje/audio…
+
+/**  
+ * Estado de conexión (simple) con caché  
+ */
+app.get('/api/whatsapp/status', async (req, res) => {
+  console.log('[DEBUG] GET /api/whatsapp/status');
+  if (cachedStatus && Date.now() - statusCacheTs < STATUS_CACHE_TTL) {
+    return res.json(cachedStatus);
+  }
+  try {
+    const resp = await axios.get(GRAPH_PHONE_URL, {
+      params: { access_token: TOKEN, fields: 'display_phone_number' }
+    });
+    cachedStatus = { status: 'Conectado', phone: resp.data.display_phone_number };
+    statusCacheTs = Date.now();
+    return res.json(cachedStatus);
+  } catch (err) {
+    console.error('[ERROR] status check failed:', err.response?.data || err.message);
+    return res
+      .status(err.response?.status || 500)
+      .json({ status: 'Desconectado', error: err.response?.data?.error?.message || err.message });
+  }
+});
+
 /**
- * Número activo
+ * Número activo (reutiliza el mismo caché de /status)
  */
 app.get('/api/whatsapp/number', async (req, res) => {
   console.log('[DEBUG] GET /api/whatsapp/number');
+  if (cachedStatus && Date.now() - statusCacheTs < STATUS_CACHE_TTL) {
+    return res.json({ phone: cachedStatus.phone });
+  }
   try {
     const resp = await axios.get(GRAPH_PHONE_URL, {
       params: { access_token: TOKEN, fields: 'display_phone_number' }
@@ -353,9 +411,32 @@ app.get('/api/whatsapp/number', async (req, res) => {
     return res.json({ phone: resp.data.display_phone_number });
   } catch (err) {
     console.error('[ERROR] number fetch failed:', err.response?.data || err.message);
-    return res.status(500).json({ error: err.response?.data?.error?.message || err.message });
+    return res
+      .status(err.response?.status || 500)
+      .json({ error: err.response?.data?.error?.message || err.message });
   }
 });
+
+/**
+ * Proxy para media: descarga desde WhatsApp o Firebase y reenvía al cliente
+ */
+app.get('/api/media', async (req, res) => {
+  const { url } = req.query;
+  if (!url) return res.status(400).send('url missing');
+  try {
+    const resp = await axios.get(url, {
+      responseType: 'stream',
+      params: url.includes('lookaside.fbsbx.com') ? { access_token: TOKEN } : {}
+    });
+    res.set('Access-Control-Allow-Origin', '*');
+    res.set('Content-Type', resp.headers['content-type']);
+    resp.data.pipe(res);
+  } catch (err) {
+    console.error('Media proxy error:', err.message);
+    res.sendStatus(500);
+  }
+});
+
 
 /**  
  * Webhook de WhatsApp: Mensajes entrantes  
@@ -483,29 +564,8 @@ if (msg.image || msg.document || msg.audio) {
   }
 });
 
-/**
- * Proxy para media: descarga desde WhatsApp o Firebase y reenvía al cliente
- */
-app.get('/api/media', async (req, res) => {
-  const { url } = req.query;
-  if (!url) return res.status(400).send('Missing url');
 
-  try {
-    // baja el stream original (incluye token en url si viene)
-    const response = await axios.get(url, {
-      responseType: 'stream',
-      // si tu URL requiere Authorization en header en lugar de query:
-      // headers: { Authorization: `Bearer ${TOKEN}` }
-    });
 
-    // reenvía content-type al cliente
-    res.setHeader('Content-Type', response.headers['content-type']);
-    response.data.pipe(res);
-  } catch (err) {
-    console.error('Error proxy /api/media:', err.message);
-    res.sendStatus(500);
-  }
-});
 
 
 // Scheduler: tus procesos periódicos
@@ -535,31 +595,7 @@ cron.schedule('* * * * *', () => {
   enviarMusicaPorWhatsApp().catch(err => console.error('Error en enviarMusicaPorWhatsApp:', err));
 });
 
-// Debe ir antes de app.listen(...)
-app.get('/api/media', async (req, res) => {
-  const { url } = req.query;
-  if (!url) {
-    return res.status(400).send('url missing');
-  }
-  try {
-    // hacemos fetch del stream
-    const resp = await axios.get(url, {
-      responseType: 'stream',
-      // si haces WA attachments, necesitas token:
-      params: resp => resp.url.includes('lookaside.fbsbx.com')
-        ? { access_token: TOKEN }
-        : {},
-    });
-    // cabeceras CORS y de tipo
-    res.set('Access-Control-Allow-Origin', '*');
-    res.set('Content-Type', resp.headers['content-type']);
-    // redirigimos el stream al cliente
-    resp.data.pipe(res);
-  } catch (err) {
-    console.error('Media proxy error:', err.message);
-    res.sendStatus(500);
-  }
-});
+
 
 // Arranca el servidor
 app.listen(port, () => {
