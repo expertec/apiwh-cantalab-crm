@@ -1,7 +1,6 @@
 // server.js
 
 import axios from 'axios';
-
 import express from 'express';
 import cors from 'cors';
 import bodyParser from 'body-parser';
@@ -41,6 +40,11 @@ const app = express();
 const port = process.env.PORT || 3001;
 const upload = multer({ dest: path.resolve('./uploads') });
 const FieldValue = admin.firestore.FieldValue;
+
+// Al inicio de server.js
+let cachedStatus = null;
+let statusCacheTs = 0;
+const STATUS_CACHE_TTL = 5 * 60 * 1000; // 5 minutos
 
 // Middlewares
 app.use(express.json({ verify: (req, res, buf) => { req.rawBody = buf } }));
@@ -328,23 +332,26 @@ app.get('/webhook', (req, res) => {
  * Estado de conexión (simple)
  */
 app.get('/api/whatsapp/status', async (req, res) => {
-  console.log('[DEBUG] GET /api/whatsapp/status');
+  // Si la caché sigue viva, la devolvemos
+  if (cachedStatus && Date.now() - statusCacheTs < STATUS_CACHE_TTL) {
+    return res.json(cachedStatus);
+  }
+
   try {
-    // Hacemos un request simple para validar token y número
     const resp = await axios.get(GRAPH_PHONE_URL, {
       params: {
         access_token: TOKEN,
         fields: 'display_phone_number'
       }
     });
-    // Si llegamos aquí, todo está OK
-    return res.json({
+    cachedStatus = {
       status: 'Conectado',
       phone: resp.data.display_phone_number
-    });
+    };
+    statusCacheTs = Date.now();
+    return res.json(cachedStatus);
   } catch (err) {
-    console.error('[ERROR] status check failed:', err.response?.data || err.message);
-    // 401, 400, 404, etc.
+    // En error no re-cacheamos
     const code = err.response?.status || 500;
     return res.status(code).json({
       status: 'Desconectado',
@@ -352,6 +359,7 @@ app.get('/api/whatsapp/status', async (req, res) => {
     });
   }
 });
+
 
 
 /**
