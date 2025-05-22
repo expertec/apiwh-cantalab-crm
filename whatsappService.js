@@ -150,32 +150,30 @@ export async function sendVideoMessage(phone, media) {
  * paginando mientras haya un cursor "after".
  */
 export async function listTemplates() {
-  const baseUrl = process.env.WABA_API_URL || 'https://graph.facebook.com/v15.0';
+  const baseUrl = process.env.WABA_API_URL;
   const businessId = process.env.WABA_BUSINESS_ACCOUNT_ID;
-  if (!businessId) {
-    throw new Error('WABA_BUSINESS_ACCOUNT_ID no está definido');
-  }
-  const url = `${baseUrl}/${businessId}/message_templates`;
   const token = process.env.WHATSAPP_TOKEN;
-  if (!token) {
-    throw new Error('WHATSAPP_TOKEN no está definido');
+
+  if (!baseUrl || !businessId || !token) {
+    throw new Error('Falta WABA_API_URL, WABA_BUSINESS_ACCOUNT_ID o WHATSAPP_TOKEN');
   }
 
+  const url = `${baseUrl}/${businessId}/message_templates`;
   let allTemplates = [];
   let after = null;
 
   do {
     const params = {
       access_token: token,
-      fields:       'name,language,components',
       status:       'APPROVED',
-      limit:        50,    // ajusta a tu gusto
-      ...(after && { after })
+      fields:       'name,language,components',
+      locale:       'es_MX',    // <— tu idioma
+      limit:        50,
+      ...(after && { after }),
     };
 
     const res = await axios.get(url, { params });
     console.log('📋 RAW TEMPLATES RESPONSE:', res.data);
-
     allTemplates = allTemplates.concat(res.data.data || []);
     after = res.data.paging?.cursors?.after;
   } while (after);
