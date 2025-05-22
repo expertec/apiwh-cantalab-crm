@@ -144,11 +144,11 @@ export async function sendVideoMessage(phone, media) {
  * Obtiene las plantillas registradas en tu WhatsApp Business Account
  */
 
-
   export async function listTemplates() {
     const baseUrl       = process.env.WABA_API_URL;      // ej. https://graph.facebook.com/v15.0
     const phoneNumberId = process.env.PHONE_NUMBER_ID;   // tu Phone Number ID
-    const token         = process.env.WHATSAPP_TOKEN;
+    const token         = process.env.WHATSAPP_TOKEN;    // tu access token
+  
     if (!baseUrl || !phoneNumberId || !token) {
       throw new Error('Faltan WABA_API_URL, PHONE_NUMBER_ID o WHATSAPP_TOKEN en tu .env');
     }
@@ -163,18 +163,17 @@ export async function sendVideoMessage(phone, media) {
         status:       'APPROVED',
         fields:       'name,language,components',
         limit:        50,
-        ...(after     && { after }),
-        language:     'es_MX',     // < — filtrado correcto por idioma
+        ...(after && { after })
       };
   
       const res = await axios.get(url, { params });
       console.log('📋 RAW TEMPLATES RESPONSE:', res.data);
+  
       allTemplates = allTemplates.concat(res.data.data || []);
       after = res.data.paging?.cursors?.after;
     } while (after);
   
     return allTemplates;
   }
-
 
   
