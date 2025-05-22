@@ -6,9 +6,6 @@ import { db } from './firebaseAdmin.js';
 
 dotenv.config();
 
-// Variables para plantillas
-const WABA_API_URL             = process.env.WABA_API_URL            || 'https://graph.facebook.com/v15.0';
-const WABA_BUSINESS_ACCOUNT_ID = process.env.WABA_BUSINESS_ACCOUNT_ID;
 const TOKEN   = process.env.WHATSAPP_TOKEN;
 const PHONEID = process.env.PHONE_NUMBER_ID;
 // Base URL para todas las llamadas (sin “/messages”)
@@ -118,8 +115,6 @@ export async function sendVideoMessage(phone, media) {
       type: 'video',
       video: videoField
     });
-
-    
   
     // Guardar en Firestore
     const q = await db.collection('leads')
@@ -139,21 +134,3 @@ export async function sendVideoMessage(phone, media) {
       await db.collection('leads').doc(leadId).update({ lastMessageAt: msgData.timestamp });
     }
   }
-
-  /**
- * Obtiene las plantillas registradas en tu WhatsApp Business Account
- */
-export async function listTemplates() {
-  const url = `${WABA_API_URL}/${WABA_BUSINESS_ACCOUNT_ID}/message_templates`;
-  const res = await axios.get(url, {
-    params: {
-      access_token: TOKEN,                 // Token de acceso de WhatsApp Cloud API
-      fields:       "name,language,components",
-      // status:     "APPROVED",            // <-- Descomenta si solo quieres plantillas aprobadas
-      limit:        100
-    }
-  });
-  return res.data.data;    // Array de objetos { name, language: { code }, components }
-}
-
-  

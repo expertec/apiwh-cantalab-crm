@@ -1,6 +1,7 @@
 // server.js
 
 import axios from 'axios';
+
 import express from 'express';
 import cors from 'cors';
 import bodyParser from 'body-parser';
@@ -13,8 +14,7 @@ import ffmpeg from 'fluent-ffmpeg';
 import ffmpegInstaller from '@ffmpeg-installer/ffmpeg';
 import { admin, db } from './firebaseAdmin.js';
 
-import { sendTextMessage, sendAudioMessage, listTemplates } from './whatsappService.js';
-
+import { sendTextMessage, sendAudioMessage } from './whatsappService.js';
 import {
   processSequences,
   generateLetras,
@@ -24,6 +24,7 @@ import {
   generarMusicaConSuno,
   enviarMusicaPorWhatsApp
 } from './scheduler.js';
+
 
 
 dotenv.config();
@@ -40,11 +41,6 @@ const app = express();
 const port = process.env.PORT || 3001;
 const upload = multer({ dest: path.resolve('./uploads') });
 const FieldValue = admin.firestore.FieldValue;
-
-// Al inicio de server.js
-let cachedStatus = null;
-let statusCacheTs = 0;
-const STATUS_CACHE_TTL = 5 * 60 * 1000; // 5 minutos
 
 // Middlewares
 app.use(express.json({ verify: (req, res, buf) => { req.rawBody = buf } }));
@@ -299,19 +295,6 @@ app.post(
   }
 );
 
-// Listar plantillas de WhatsApp
-app.get('/api/templates', async (req, res) => {
-  try {
-    const templates = await listTemplates();
-    res.json(templates);
-  } catch (e) {
-    console.error('Error listando plantillas', e);
-    res.status(500).json({ error: e.message });
-  }
-});
-
-
-
 /**  
  * Webhook de WhatsApp: Verificación  
  */
@@ -332,26 +315,23 @@ app.get('/webhook', (req, res) => {
  * Estado de conexión (simple)
  */
 app.get('/api/whatsapp/status', async (req, res) => {
-  // Si la caché sigue viva, la devolvemos
-  if (cachedStatus && Date.now() - statusCacheTs < STATUS_CACHE_TTL) {
-    return res.json(cachedStatus);
-  }
-
+  console.log('[DEBUG] GET /api/whatsapp/status');
   try {
+    // Hacemos un request simple para validar token y número
     const resp = await axios.get(GRAPH_PHONE_URL, {
       params: {
         access_token: TOKEN,
         fields: 'display_phone_number'
       }
     });
-    cachedStatus = {
+    // Si llegamos aquí, todo está OK
+    return res.json({
       status: 'Conectado',
       phone: resp.data.display_phone_number
-    };
-    statusCacheTs = Date.now();
-    return res.json(cachedStatus);
+    });
   } catch (err) {
-    // En error no re-cacheamos
+    console.error('[ERROR] status check failed:', err.response?.data || err.message);
+    // 401, 400, 404, etc.
     const code = err.response?.status || 500;
     return res.status(code).json({
       status: 'Desconectado',
@@ -359,7 +339,6 @@ app.get('/api/whatsapp/status', async (req, res) => {
     });
   }
 });
-
 
 
 /**
