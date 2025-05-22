@@ -7,12 +7,12 @@ import { db } from './firebaseAdmin.js';
 dotenv.config();
 
 // Variables para plantillas
-const WABA_API_URL             = process.env.WABA_API_URL            || 'https://graph.facebook.com/v15.0';
+const WABA_API_URL             = process.env.WABA_API_URL            || 'https://graph.facebook.com/v22.0';
 const WABA_BUSINESS_ACCOUNT_ID = process.env.WABA_BUSINESS_ACCOUNT_ID;
 const TOKEN   = process.env.WHATSAPP_TOKEN;
 const PHONEID = process.env.PHONE_NUMBER_ID;
 // Base URL para todas las llamadas (sin “/messages”)
-const API_BASE = `https://graph.facebook.com/v15.0/${PHONEID}`;
+const API_BASE = `https://graph.facebook.com/v22.0/${PHONEID}`;
 
 /** Normaliza teléfono a E.164 sin '+' */
 function normalize(phone) {
@@ -145,41 +145,36 @@ export async function sendVideoMessage(phone, media) {
  */
 
 
-/**
- * Obtiene todas las plantillas aprobadas de tu WhatsApp Business Account,
- * paginando mientras haya un cursor "after".
- */
-export async function listTemplates() {
-  const baseUrl = process.env.WABA_API_URL;
-  const businessId = process.env.WABA_BUSINESS_ACCOUNT_ID;
-  const token = process.env.WHATSAPP_TOKEN;
-
-  if (!baseUrl || !businessId || !token) {
-    throw new Error('Falta WABA_API_URL, WABA_BUSINESS_ACCOUNT_ID o WHATSAPP_TOKEN');
+  export async function listTemplates() {
+    const baseUrl       = process.env.WABA_API_URL;      // ej. https://graph.facebook.com/v15.0
+    const phoneNumberId = process.env.PHONE_NUMBER_ID;   // tu Phone Number ID
+    const token         = process.env.WHATSAPP_TOKEN;
+    if (!baseUrl || !phoneNumberId || !token) {
+      throw new Error('Faltan WABA_API_URL, PHONE_NUMBER_ID o WHATSAPP_TOKEN en tu .env');
+    }
+  
+    const url = `${baseUrl}/${phoneNumberId}/message_templates`;
+    let allTemplates = [];
+    let after = null;
+  
+    do {
+      const params = {
+        access_token: token,
+        status:       'APPROVED',
+        fields:       'name,language,components',
+        limit:        50,
+        ...(after     && { after }),
+        language:     'es_MX',     // < — filtrado correcto por idioma
+      };
+  
+      const res = await axios.get(url, { params });
+      console.log('📋 RAW TEMPLATES RESPONSE:', res.data);
+      allTemplates = allTemplates.concat(res.data.data || []);
+      after = res.data.paging?.cursors?.after;
+    } while (after);
+  
+    return allTemplates;
   }
-
-  const url = `${baseUrl}/${businessId}/message_templates`;
-  let allTemplates = [];
-  let after = null;
-
-  do {
-    const params = {
-      access_token: token,
-      status:       'APPROVED',
-      fields:       'name,language,components',
-      locale:       'es_MX',    // <— tu idioma
-      limit:        50,
-      ...(after && { after }),
-    };
-
-    const res = await axios.get(url, { params });
-    console.log('📋 RAW TEMPLATES RESPONSE:', res.data);
-    allTemplates = allTemplates.concat(res.data.data || []);
-    after = res.data.paging?.cursors?.after;
-  } while (after);
-
-  return allTemplates;
-}
 
 
   

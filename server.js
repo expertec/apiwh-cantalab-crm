@@ -35,7 +35,7 @@ const bucket = admin.storage().bucket();
 
 const TOKEN = process.env.WHATSAPP_TOKEN;
 const PHONEID = process.env.PHONE_NUMBER_ID;
-const GRAPH_PHONE_URL = `https://graph.facebook.com/v15.0/${PHONEID}`;
+const GRAPH_PHONE_URL = `https://graph.facebook.com/v22.0/${PHONEID}`;
 
 const app = express();
 const port = process.env.PORT || 3001;
