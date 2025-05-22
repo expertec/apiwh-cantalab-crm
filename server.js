@@ -295,17 +295,15 @@ app.post(
   }
 );
 
-// Listar plantillas de WhatsApp
-app.get('/api/templates', async (req, res) => {
+app.get('/api/whatsapp/templates', async (req, res) => {
   try {
     const templates = await listTemplates();
     res.json(templates);
   } catch (e) {
-    console.error('Error listando plantillas', e);
-    res.status(500).json({ error: e.message });
+    console.error('Error listando plantillas:', e);
+    res.status(500).send({ error: e.message });
   }
 });
-
 
 
 /**  

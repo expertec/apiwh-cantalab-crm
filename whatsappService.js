@@ -12,7 +12,14 @@ const WABA_BUSINESS_ACCOUNT_ID = process.env.WABA_BUSINESS_ACCOUNT_ID;
 const TOKEN   = process.env.WHATSAPP_TOKEN;
 const PHONEID = process.env.PHONE_NUMBER_ID;
 // Base URL para todas las llamadas (sin “/messages”)
-const API_BASE = `https://graph.facebook.com/v22.0/${PHONEID}`;
+
+
+
+// Para enviar mensajes (usa el phone_number_id)
+const PHONE_API_BASE = `${process.env.WABA_API_URL}/${process.env.PHONE_NUMBER_ID}`;
+
+// Para gestión de plantillas (usa el business_account_id)
+const WABA_API_BASE  = `${process.env.WABA_API_URL}/${process.env.WABA_BUSINESS_ACCOUNT_ID}`;
 
 /** Normaliza teléfono a E.164 sin '+' */
 function normalize(phone) {
@@ -23,7 +30,8 @@ function normalize(phone) {
 
 /** Llama a la WhatsApp Cloud API */
 async function callWhatsAppAPI(path, body, config = {}) {
-  const url = API_BASE + path;
+
+  const url = PHONE_API_BASE + path;
   console.log(`[WA API] POST ${path}:`, body);
 
   const axiosConfig = {
@@ -145,37 +153,30 @@ export async function sendVideoMessage(phone, media) {
  */
 
   export async function listTemplates() {
-    const baseUrl           = process.env.WABA_API_URL;              // e.g. https://graph.facebook.com/v22.0
-    const businessAccountId = process.env.WABA_BUSINESS_ACCOUNT_ID; // tu WhatsApp Business Account ID
-    const token             = process.env.WHATSAPP_TOKEN;
-  
-    if (!baseUrl || !businessAccountId || !token) {
-      throw new Error('Faltan WABA_API_URL, WABA_BUSINESS_ACCOUNT_ID o WHATSAPP_TOKEN en tu .env');
+    if (!WABA_API_BASE || !TOKEN) {
+      throw new Error('Revisa WABA_API_BASE y WHATSAPP_TOKEN en tu .env');
     }
   
-    // 👉 Apunta al nodo business_account, no al número de teléfono
-    const url = `${baseUrl}/${businessAccountId}/message_templates`;
-  
-    let allTemplates = [];
-    let after = null;
+    const url = `${WABA_API_BASE}/message_templates`;
+    let all = [], after = null;
   
     do {
-      const params = {
-        access_token: token,
-        status:       'APPROVED',
-        fields:       'name,language,components',
-        limit:        50,
-        ...(after && { after }),
-      };
-  
-      const res = await axios.get(url, { params });
+      const res = await axios.get(url, {
+        params: {
+          access_token: TOKEN,
+          status: 'APPROVED',
+          fields: 'name,language,components',
+          limit: 50,
+          ...(after && { after })
+        }
+      });
       console.log('📋 RAW TEMPLATES RESPONSE:', res.data);
-  
-      allTemplates = allTemplates.concat(res.data.data || []);
+      all = all.concat(res.data.data || []);
       after = res.data.paging?.cursors?.after;
     } while (after);
   
-    return allTemplates;
+    return all;
   }
+  
 
   
