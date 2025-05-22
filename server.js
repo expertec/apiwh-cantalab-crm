@@ -15,6 +15,7 @@ import ffmpegInstaller from '@ffmpeg-installer/ffmpeg';
 import { admin, db } from './firebaseAdmin.js';
 
 import { sendTextMessage, sendAudioMessage } from './whatsappService.js';
+import { listTemplates } from './whatsappService.js';
 import {
   processSequences,
   generateLetras,
@@ -294,17 +295,16 @@ app.post(
   }
 );
 
-// justo después de tus otros endpoints:
 app.get('/api/templates', async (req, res) => {
   try {
-    const templates = await listTemplates()
-    // opcionalmente filtra por idioma si quieres sólo 'es_MX'
-    res.json(templates)
+    const templates = await listTemplates();
+    res.json(templates);
   } catch (e) {
-    console.error('Error listando plantillas', e)
-    res.status(500).json({ error: e.message })
+    console.error('Error listando plantillas', e);
+    res.status(500).json({ error: e.message });
   }
-})
+});
+
 
 /**  
  * Webhook de WhatsApp: Verificación  

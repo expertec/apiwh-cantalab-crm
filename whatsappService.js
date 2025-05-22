@@ -137,18 +137,16 @@ export async function sendVideoMessage(phone, media) {
     }
   }
 
-  /**
- * Obtiene las plantillas registradas en tu WhatsApp Business Account
- */
+// al final de whatsappService.js
 export async function listTemplates() {
-  const url = `${WABA_API_URL}/${WABA_PHONE_ID}/message_templates`
+  const url = `${WABA_API_URL}/${WABA_BUSINESS_ACCOUNT_ID}/message_templates`;
   const res = await axios.get(url, {
     params: {
-      limit: 100,            // ajusta si necesitas paginación
-      "fields": "name,language,components"
+      fields: "name,language,components",
+      status: "APPROVED",
+      limit: 100
     },
     headers: { Authorization: `Bearer ${WABA_TOKEN}` }
-  })
-  // res.data.data es un array de plantillas
-  return res.data.data  
+  });
+  return res.data.data;
 }
