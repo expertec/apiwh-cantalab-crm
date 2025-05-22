@@ -145,15 +145,16 @@ export async function sendVideoMessage(phone, media) {
  */
 
   export async function listTemplates() {
-    const baseUrl       = process.env.WABA_API_URL;      // ej. https://graph.facebook.com/v15.0
-    const phoneNumberId = process.env.PHONE_NUMBER_ID;   // tu Phone Number ID
-    const token         = process.env.WHATSAPP_TOKEN;    // tu access token
+   const baseUrl         = process.env.WABA_API_URL;             // ej. https://graph.facebook.com/v15.0
+   const businessAccount = process.env.WABA_BUSINESS_ACCOUNT_ID; // tu WhatsApp Business Account ID    
+   const token         = process.env.WHATSAPP_TOKEN;    // tu access token
   
     if (!baseUrl || !phoneNumberId || !token) {
       throw new Error('Faltan WABA_API_URL, PHONE_NUMBER_ID o WHATSAPP_TOKEN en tu .env');
     }
   
-    const url = `${baseUrl}/${phoneNumberId}/message_templates`;
+    
+    const url = `${baseUrl}/${businessAccount}/message_templates`;
     let allTemplates = [];
     let after = null;
   
