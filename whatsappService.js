@@ -7,7 +7,7 @@ import { db } from './firebaseAdmin.js';
 dotenv.config();
 
 // Variables para plantillas
-const WABA_API_URL             = process.env.WABA_API_URL            || 'https://graph.facebook.com/v22.0';
+const WABA_API_URL             = process.env.WABA_API_URL            || 'https://graph.facebook.com/v15.0';
 const WABA_BUSINESS_ACCOUNT_ID = process.env.WABA_BUSINESS_ACCOUNT_ID;
 const TOKEN   = process.env.WHATSAPP_TOKEN;
 const PHONEID = process.env.PHONE_NUMBER_ID;
@@ -143,38 +143,17 @@ export async function sendVideoMessage(phone, media) {
   /**
  * Obtiene las plantillas registradas en tu WhatsApp Business Account
  */
-
-
-  export async function listTemplates() {
-    const baseUrl       = process.env.WABA_API_URL;      // ej. https://graph.facebook.com/v15.0
-    const phoneNumberId = process.env.PHONE_NUMBER_ID;   // tu Phone Number ID
-    const token         = process.env.WHATSAPP_TOKEN;
-    if (!baseUrl || !phoneNumberId || !token) {
-      throw new Error('Faltan WABA_API_URL, PHONE_NUMBER_ID o WHATSAPP_TOKEN en tu .env');
+export async function listTemplates() {
+  const url = `${WABA_API_URL}/${WABA_BUSINESS_ACCOUNT_ID}/message_templates`;
+  const res = await axios.get(url, {
+    params: {
+      access_token: TOKEN,                 // Token de acceso de WhatsApp Cloud API
+      fields:       "name,language,components",
+      // status:     "APPROVED",            // <-- Descomenta si solo quieres plantillas aprobadas
+      limit:        100
     }
-  
-    const url = `${baseUrl}/${phoneNumberId}/message_templates`;
-    let allTemplates = [];
-    let after = null;
-  
-    do {
-      const params = {
-        access_token: token,
-        status:       'APPROVED',
-        fields:       'name,language,components',
-        limit:        50,
-        ...(after     && { after }),
-        language:     'es_MX',     // < — filtrado correcto por idioma
-      };
-  
-      const res = await axios.get(url, { params });
-      console.log('📋 RAW TEMPLATES RESPONSE:', res.data);
-      allTemplates = allTemplates.concat(res.data.data || []);
-      after = res.data.paging?.cursors?.after;
-    } while (after);
-  
-    return allTemplates;
-  }
-
+  });
+  return res.data.data;    // Array de objetos { name, language: { code }, components }
+}
 
   
