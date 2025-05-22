@@ -26,7 +26,6 @@ import {
 } from './scheduler.js';
 
 
-
 dotenv.config();
 ffmpeg.setFfmpegPath(ffmpegInstaller.path);
 
@@ -294,6 +293,18 @@ app.post(
     }
   }
 );
+
+// justo después de tus otros endpoints:
+app.get('/api/templates', async (req, res) => {
+  try {
+    const templates = await listTemplates()
+    // opcionalmente filtra por idioma si quieres sólo 'es_MX'
+    res.json(templates)
+  } catch (e) {
+    console.error('Error listando plantillas', e)
+    res.status(500).json({ error: e.message })
+  }
+})
 
 /**  
  * Webhook de WhatsApp: Verificación  

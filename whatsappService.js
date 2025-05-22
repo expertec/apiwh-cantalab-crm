@@ -115,6 +115,8 @@ export async function sendVideoMessage(phone, media) {
       type: 'video',
       video: videoField
     });
+
+    
   
     // Guardar en Firestore
     const q = await db.collection('leads')
@@ -134,3 +136,19 @@ export async function sendVideoMessage(phone, media) {
       await db.collection('leads').doc(leadId).update({ lastMessageAt: msgData.timestamp });
     }
   }
+
+  /**
+ * Obtiene las plantillas registradas en tu WhatsApp Business Account
+ */
+export async function listTemplates() {
+  const url = `${WABA_API_URL}/${WABA_PHONE_ID}/message_templates`
+  const res = await axios.get(url, {
+    params: {
+      limit: 100,            // ajusta si necesitas paginación
+      "fields": "name,language,components"
+    },
+    headers: { Authorization: `Bearer ${WABA_TOKEN}` }
+  })
+  // res.data.data es un array de plantillas
+  return res.data.data  
+}
