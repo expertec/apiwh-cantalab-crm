@@ -144,20 +144,43 @@ export async function sendVideoMessage(phone, media) {
  * Obtiene las plantillas registradas en tu WhatsApp Business Account
  */
 
-export async function listTemplates() {
-  const url = `${WABA_API_URL}/${WABA_BUSINESS_ACCOUNT_ID}/message_templates`;
-  const res = await axios.get(url, {
-    params: {
-      access_token: TOKEN,
-      fields:       "name,language,components",
-      // status:     "APPROVED",    // comentado para ver todos
-      limit:        100
-    }
-  });
 
-  console.log("📋 RAW TEMPLATES RESPONSE:", JSON.stringify(res.data, null, 2));
-  // res.data debería incluir `data: [ {...}, {...} ]` y, si hay más, un campo `paging`
-  return res.data.data;
+/**
+ * Obtiene todas las plantillas aprobadas de tu WhatsApp Business Account,
+ * paginando mientras haya un cursor "after".
+ */
+export async function listTemplates() {
+  const baseUrl = process.env.WABA_API_URL || 'https://graph.facebook.com/v15.0';
+  const businessId = process.env.WABA_BUSINESS_ACCOUNT_ID;
+  if (!businessId) {
+    throw new Error('WABA_BUSINESS_ACCOUNT_ID no está definido');
+  }
+  const url = `${baseUrl}/${businessId}/message_templates`;
+  const token = process.env.WHATSAPP_TOKEN;
+  if (!token) {
+    throw new Error('WHATSAPP_TOKEN no está definido');
+  }
+
+  let allTemplates = [];
+  let after = null;
+
+  do {
+    const params = {
+      access_token: token,
+      fields:       'name,language,components',
+      status:       'APPROVED',
+      limit:        50,    // ajusta a tu gusto
+      ...(after && { after })
+    };
+
+    const res = await axios.get(url, { params });
+    console.log('📋 RAW TEMPLATES RESPONSE:', res.data);
+
+    allTemplates = allTemplates.concat(res.data.data || []);
+    after = res.data.paging?.cursors?.after;
+  } while (after);
+
+  return allTemplates;
 }
 
 
