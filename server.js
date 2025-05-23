@@ -249,6 +249,22 @@ app.post('/api/suno/callback', express.json(), async (req, res) => {
 });
 
 
+app.post('/api/validate-whatsapp', async (req, res, next) => {
+  try {
+    const { phone } = req.body;
+    const { data } = await axios.post(
+      `https://graph.facebook.com/v15.0/${PHONEID}/contacts?access_token=${TOKEN}`,
+      { blocking: 'wait', contacts: [phone], force_check: true }
+    );
+    const [contact] = data.contacts;
+    res.json({ valid: contact.status === 'valid' });
+  } catch (err) {
+    next(err);
+  }
+});
+
+
+
 
 // NUEVA ruta para los audios del chat
 app.post(
