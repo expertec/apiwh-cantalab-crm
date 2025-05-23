@@ -249,22 +249,35 @@ app.post('/api/suno/callback', express.json(), async (req, res) => {
 });
 
 
-app.post('/api/validate-whatsapp', async (req, res, next) => {
+// En server.js, reemplaza tu antigua ruta por esta versión completa y actualizada:
+app.post('/api/validate-whatsapp', async (req, res) => {
+  const { phone } = req.body;
+
   try {
-    const { phone } = req.body;
+    // Usamos la URL configurable en lugar de v15.0 hardcodeado
+    const url = `${process.env.WABA_API_URL}/${PHONEID}/contacts`;
     const { data } = await axios.post(
-      `https://graph.facebook.com/v15.0/${PHONEID}/contacts?access_token=${TOKEN}`,
-      { blocking: 'wait', contacts: [phone], force_check: true }
+      url,
+      { blocking: 'wait', contacts: [phone], force_check: true },
+      { params: { access_token: TOKEN } }
     );
-    const [contact] = data.contacts;
-    res.json({ valid: contact.status === 'valid' });
+
+    const [contact] = data.contacts || [];
+    const valid = contact?.status === 'valid';
+
+    return res.json({ valid });
   } catch (err) {
-    next(err);
+    // Logueamos el body completo de la respuesta de Facebook para depuración
+    console.error('❌ validate-whatsapp error:', err.response?.data || err.message);
+
+    // Devolvemos siempre JSON con mensaje claro
+    return res
+      .status(err.response?.status || 500)
+      .json({
+        error: err.response?.data?.error?.message || err.message
+      });
   }
 });
-
-
-
 
 // NUEVA ruta para los audios del chat
 app.post(
